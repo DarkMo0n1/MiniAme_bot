@@ -5,17 +5,25 @@ from datetime import datetime, timedelta
 import telebot
 from telebot import types
 import threading
+import logging
+
+# Настройка логирования
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 TOKEN = '8549158268:AAHmfHcRnUpTxilyY72RL8pWK9Fr7qTcKBU'
 bot = telebot.TeleBot(TOKEN)
 
-FILES_DIR = 'homework_files'
+# Абсолютные пути для VPS
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+FILES_DIR = os.path.join(BASE_DIR, 'homework_files')
 if not os.path.exists(FILES_DIR):
-    os.makedirs(FILES_DIR)
+    os.makedirs(FILES_DIR, exist_ok=True)
+    logger.info(f"Создана директория для файлов: {FILES_DIR}")
 
 TOPIC_ID = 60817
 CONSOLE_CHAT_ID = -1002530863470
-BIRTHDAYS_FILE = 'birthdays.txt'
+BIRTHDAYS_FILE = os.path.join(BASE_DIR, 'birthdays.txt')
 
 user_data = {}
 
@@ -85,9 +93,9 @@ def load_birthdays():
                             month = int(parts[1].strip())
                             day = int(parts[2].strip())
                             birthdays.append((name, month, day))
-            print(f"Загружено {len(birthdays)} дней рождения")
+            logger.info(f"Загружено {len(birthdays)} дней рождения")
         except Exception as e:
-            print(f"Ошибка при загрузке дней рождения: {e}")
+            logger.error(f"Ошибка при загрузке дней рождения: {e}")
     return birthdays
 
 
@@ -102,9 +110,9 @@ def save_birthdays_to_db():
             cursor.execute('INSERT OR IGNORE INTO birthdays (name, month, day, added_by) VALUES (?, ?, ?, ?)',
                           (name, month, day, "Система"))
         conn.commit()
-        print(f"Сохранено {len(birthdays)} дней рождения в БД")
+        logger.info(f"Сохранено {len(birthdays)} дней рождения в БД")
     except Exception as e:
-        print(f"Ошибка: {e}")
+        logger.error(f"Ошибка: {e}")
         conn.rollback()
     finally:
         conn.close()
@@ -114,10 +122,10 @@ def add_birthday_to_file(name, month, day, added_by):
     try:
         with open(BIRTHDAYS_FILE, 'a', encoding='utf-8') as f:
             f.write(f"{name}|{month}|{day}|{added_by}\n")
-        print(f"День рождения добавлен: {name} - {day}.{month}")
+        logger.info(f"День рождения добавлен: {name} - {day}.{month}")
         return True
     except Exception as e:
-        print(f"Ошибка: {e}")
+        logger.error(f"Ошибка: {e}")
         return False
 
 
@@ -138,7 +146,7 @@ def get_birthdays_by_month(month):
                                 birthdays.append((name, day))
             birthdays.sort(key=lambda x: x[1])
         except Exception as e:
-            print(f"Ошибка: {e}")
+            logger.error(f"Ошибка: {e}")
     return birthdays
 
 
@@ -198,6 +206,7 @@ def init_db():
     conn.commit()
     conn.close()
     save_birthdays_to_db()
+    logger.info("База данных инициализирована")
 
 
 def generate_unique_filename(original_name, file_type):
@@ -222,10 +231,17 @@ def save_file_locally(file_content, file_name, file_type):
     try:
         unique_filename = generate_unique_filename(file_name, file_type)
         file_path = os.path.join(FILES_DIR, unique_filename)
+        
+        # Проверяем и создаем директорию если нужно
+        os.makedirs(os.path.dirname(file_path), exist_ok=True)
+        
         with open(file_path, 'wb') as f:
             f.write(file_content)
+        
+        logger.info(f"Файл сохранен: {file_path}")
         return file_path
-    except Exception:
+    except Exception as e:
+        logger.error(f"Ошибка при сохранении файла: {e}")
         return None
 
 
@@ -315,7 +331,7 @@ def check_topic_access(message):
 def send_welcome(message):
     global CONSOLE_CHAT_ID
     CONSOLE_CHAT_ID = message.chat.id
-    print(f"ID чата: {CONSOLE_CHAT_ID}")
+    logger.info(f"ID чата: {CONSOLE_CHAT_ID}")
 
     if not check_topic_access(message):
         return
@@ -783,7 +799,8 @@ def handle_file(message):
                 else:
                     send_error(message, "❌ Не удалось сохранить файл. Попробуйте еще раз.")
 
-            except Exception:
+            except Exception as e:
+                logger.error(f"Ошибка при обработке файла: {e}")
                 send_error(message, "❌ Не удалось загрузить файл. Попробуйте другой файл или отправьте /skip.")
         else:
             send_error(message, "❌ Неподдерживаемый тип файла.")
@@ -906,7 +923,8 @@ def show_dates_list(call):
             conn.close()
 
             buttons.append(types.InlineKeyboardButton(f"📅 {formatted_date} ({count})", callback_data=f"view_date_{date_str}"))
-        except:
+        except Exception as e:
+            logger.error(f"Ошибка при форматировании даты: {e}")
             continue
 
     for i in range(0, len(buttons), 2):
@@ -1039,37 +1057,48 @@ def show_homework_files(call, hw_id):
 
     for i, (file_path, file_type, file_name, file_added_by) in enumerate(files, 1):
         try:
+            # Используем абсолютный путь для чтения файла
             if os.path.exists(file_path):
+                logger.info(f"Отправка файла: {file_path}")
                 with open(file_path, 'rb') as file:
                     file_data = file.read()
                     caption = f"📄 Файл {i}: {file_name}"
                     if file_added_by:
                         caption += f"\n👤 Добавил: {file_added_by}"
 
-                    send_methods = {
-                        'фото': bot.send_photo,
-                        'документ': bot.send_document,
-                        'аудио': bot.send_audio,
-                        'видео': bot.send_video,
-                        'голосовое сообщение': bot.send_voice
-                    }
-
-                    if file_type in send_methods:
-                        send_func = send_methods[file_type]
-                        kwargs = {'caption': caption}
-                        if file_type == 'документ':
-                            kwargs['visible_file_name'] = file_name
-
+                    # Определяем функцию для отправки файла
+                    send_func = None
+                    params = {}
+                    
+                    if file_type == 'фото':
+                        send_func = bot.send_photo
+                        params = {'caption': caption}
+                    elif file_type == 'документ':
+                        send_func = bot.send_document
+                        params = {'caption': caption, 'visible_file_name': file_name}
+                    elif file_type == 'аудио':
+                        send_func = bot.send_audio
+                        params = {'caption': caption, 'title': file_name}
+                    elif file_type == 'видео':
+                        send_func = bot.send_video
+                        params = {'caption': caption}
+                    elif file_type == 'голосовое сообщение':
+                        send_func = bot.send_voice
+                        params = {'caption': caption}
+                    
+                    if send_func:
                         if chat_id and TOPIC_ID is not None:
-                            send_func(chat_id, file_data, message_thread_id=TOPIC_ID, **kwargs)
+                            send_func(chat_id, file_data, message_thread_id=TOPIC_ID, **params)
                         else:
-                            send_func(chat_id, file_data, **kwargs)
+                            send_func(chat_id, file_data, **params)
                     else:
                         send_error_file(chat_id, f"❌ Неподдерживаемый тип файла: {file_name}")
             else:
+                logger.error(f"Файл не найден: {file_path}")
                 send_error_file(chat_id, f"❌ Файл не найден: {file_name}")
 
-        except Exception:
+        except Exception as e:
+            logger.error(f"Ошибка при отправке файла {i}: {e}")
             send_error_file(chat_id, f"❌ Не удалось отправить файл {i}: {file_name}")
 
 
@@ -1105,7 +1134,9 @@ def delete_homework_callback(call):
             try:
                 if file_path and os.path.exists(file_path):
                     os.remove(file_path)
-            except Exception:
+                    logger.info(f"Файл удален: {file_path}")
+            except Exception as e:
+                logger.error(f"Ошибка при удалении файла {file_path}: {e}")
                 pass
 
         cursor.execute('DELETE FROM homework WHERE id = ?', (hw_id,))
@@ -1133,6 +1164,7 @@ def delete_homework_callback(call):
             conn.close()
         except:
             pass
+        logger.error(f"Ошибка при удалении задания: {e}")
         bot.answer_callback_query(call.id, "❌ Ошибка при удалении задания")
 
 
@@ -1389,8 +1421,8 @@ def cancel_operation(message):
                 try:
                     if os.path.exists(file_path):
                         os.remove(file_path)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.error(f"Ошибка при удалении временного файла: {e}")
         del user_data[user_id]
 
     markup = create_back_to_menu_button()
