@@ -36,7 +36,7 @@ TOPIC_ID = 60817
 CONSOLE_CHAT_ID = -1002530863470
 NOTIFICATION_CHAT_ID = 2  # ID чата для уведомлений
 # Список ID администраторов
-ADMIN_IDS = [1087190562, 5621181751]
+ADMIN_IDS = [1087190562, 5621181751, 2068653336]
 BIRTHDAYS_FILE = os.path.join(BASE_DIR, 'birthdays.txt')
 
 user_data = {}
