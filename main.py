@@ -1057,7 +1057,12 @@ def show_homework_files(call, hw_id):
 
     for i, (file_path, file_type, file_name, file_added_by) in enumerate(files, 1):
         try:
-            # Используем абсолютный путь для чтения файла
+            # ИСПРАВЛЕНИЕ: Проверяем и исправляем путь к файлу если нужно
+            if not os.path.isabs(file_path):
+                # Если путь относительный, конвертируем в абсолютный
+                file_path = os.path.join(FILES_DIR, os.path.basename(file_path))
+            
+            # Проверяем наличие файла по правильному пути
             if os.path.exists(file_path):
                 logger.info(f"Отправка файла: {file_path}")
                 with open(file_path, 'rb') as file:
@@ -1094,8 +1099,46 @@ def show_homework_files(call, hw_id):
                     else:
                         send_error_file(chat_id, f"❌ Неподдерживаемый тип файла: {file_name}")
             else:
-                logger.error(f"Файл не найден: {file_path}")
-                send_error_file(chat_id, f"❌ Файл не найден: {file_name}")
+                # Пробуем найти файл по имени в FILES_DIR
+                file_name_only = os.path.basename(file_path)
+                alt_path = os.path.join(FILES_DIR, file_name_only)
+                if os.path.exists(alt_path):
+                    logger.info(f"Файл найден по альтернативному пути: {alt_path}")
+                    with open(alt_path, 'rb') as file:
+                        file_data = file.read()
+                        caption = f"📄 Файл {i}: {file_name}"
+                        if file_added_by:
+                            caption += f"\n👤 Добавил: {file_added_by}"
+                        
+                        # Определяем функцию для отправки файла
+                        send_func = None
+                        params = {}
+                        
+                        if file_type == 'фото':
+                            send_func = bot.send_photo
+                            params = {'caption': caption}
+                        elif file_type == 'документ':
+                            send_func = bot.send_document
+                            params = {'caption': caption, 'visible_file_name': file_name}
+                        elif file_type == 'аудио':
+                            send_func = bot.send_audio
+                            params = {'caption': caption, 'title': file_name}
+                        elif file_type == 'видео':
+                            send_func = bot.send_video
+                            params = {'caption': caption}
+                        elif file_type == 'голосовое сообщение':
+                            send_func = bot.send_voice
+                            params = {'caption': caption}
+                        
+                        if send_func:
+                            if chat_id and TOPIC_ID is not None:
+                                send_func(chat_id, file_data, message_thread_id=TOPIC_ID, **params)
+                            else:
+                                send_func(chat_id, file_data, **params)
+                else:
+                    logger.error(f"Файл не найден: {file_path}")
+                    logger.error(f"Альтернативный путь также не найден: {alt_path}")
+                    send_error_file(chat_id, f"❌ Файл не найден: {file_name}")
 
         except Exception as e:
             logger.error(f"Ошибка при отправке файла {i}: {e}")
@@ -1132,7 +1175,11 @@ def delete_homework_callback(call):
 
         for (file_path,) in files_to_delete:
             try:
-                if file_path and os.path.exists(file_path):
+                # Исправляем путь к файлу если нужно
+                if not os.path.isabs(file_path):
+                    file_path = os.path.join(FILES_DIR, os.path.basename(file_path))
+                    
+                if os.path.exists(file_path):
                     os.remove(file_path)
                     logger.info(f"Файл удален: {file_path}")
             except Exception as e:
