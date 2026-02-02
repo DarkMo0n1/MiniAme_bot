@@ -8,7 +8,14 @@ import threading
 import logging
 
 # Настройка логирования
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('bot.log', encoding='utf-8'),
+        logging.StreamHandler()
+    ]
+)
 logger = logging.getLogger(__name__)
 
 TOKEN = '8549158268:AAHmfHcRnUpTxilyY72RL8pWK9Fr7qTcKBU'
@@ -17,61 +24,281 @@ bot = telebot.TeleBot(TOKEN)
 # Абсолютные пути для VPS
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 FILES_DIR = os.path.join(BASE_DIR, 'homework_files')
+EXAM_FILES_DIR = os.path.join(BASE_DIR, 'exam_files')
 if not os.path.exists(FILES_DIR):
     os.makedirs(FILES_DIR, exist_ok=True)
     logger.info(f"Создана директория для файлов: {FILES_DIR}")
+if not os.path.exists(EXAM_FILES_DIR):
+    os.makedirs(EXAM_FILES_DIR, exist_ok=True)
+    logger.info(f"Создана директория для файлов экзаменов: {EXAM_FILES_DIR}")
 
 TOPIC_ID = 60817
 CONSOLE_CHAT_ID = -1002530863470
+NOTIFICATION_CHAT_ID = 2  # ID чата для уведомлений
+# Список ID администраторов
+ADMIN_IDS = [1087190562, 5621181751]
 BIRTHDAYS_FILE = os.path.join(BASE_DIR, 'birthdays.txt')
 
 user_data = {}
+exam_notifications = {}
 
 
-def console_input():
-    print("\nКонсольный режим бота активирован!")
-    print("Введите сообщение, начиная с '!', чтобы отправить его от лица бота")
-    print("Для выхода введите 'exit'\n")
+def is_admin(user_id):
+    """Проверяет, является ли пользователь администратором"""
+    return user_id in ADMIN_IDS
 
-    while True:
-        try:
-            user_input = input("> ").strip()
 
-            if user_input.lower() == 'exit':
-                print("Завершение работы...")
-                os._exit(0)
+def check_topic_access(message):
+    """Проверяет доступ к топику - разрешает команды в личных сообщениях и в нужном топике"""
+    # Если топик не задан, разрешаем все
+    if TOPIC_ID is None:
+        return True
 
-            elif user_input.startswith('!'):
-                message_text = user_input[1:].strip()
-                if not message_text:
-                    print("Сообщение не может быть пустым!")
-                    continue
+    # В личных сообщениях разрешаем все команды
+    if message.chat.type == 'private':
+        return True
 
-                if CONSOLE_CHAT_ID:
-                    try:
-                        bot.send_message(CONSOLE_CHAT_ID, message_text)
-                        print(f"✓ Сообщение отправлено в чат {CONSOLE_CHAT_ID}")
-                    except Exception as e:
-                        print(f"✗ Ошибка отправки: {e}")
-                else:
-                    print("✗ Не указан ID чата. Отправьте сначала любое сообщение боту.")
+    # В группах/супергруппах проверяем топик
+    if message.chat.type in ['group', 'supergroup']:
+        # Если сообщение в топике
+        if hasattr(message, 'message_thread_id'):
+            return message.message_thread_id == TOPIC_ID
+        # Если сообщение не в топике, но это команда, которую нужно разрешить везде
+        # (например, /del_mes, /clear, /clear_all)
+        return True
 
-            else:
-                print("Для отправки сообщения начните его с '!'")
+    return False
 
-        except KeyboardInterrupt:
-            print("\nЗавершение работы...")
-            os._exit(0)
-        except Exception as e:
-            print(f"Ошибка: {e}")
+
+def is_in_correct_topic(message):
+    """Проверяет, находится ли сообщение в правильном топике (для команд очистки)"""
+    # В личных сообщениях эти команды не должны работать
+    if message.chat.type == 'private':
+        return False
+
+    if TOPIC_ID is None:
+        return True
+
+    if message.chat.type in ['group', 'supergroup']:
+        if hasattr(message, 'message_thread_id'):
+            return message.message_thread_id == TOPIC_ID
+    return False
+
+
+def init_db():
+    conn = sqlite3.connect('homework.db')
+    cursor = conn.cursor()
+
+    cursor.execute('''
+                   CREATE TABLE IF NOT EXISTS homework
+                   (
+                       id
+                       INTEGER
+                       PRIMARY
+                       KEY
+                       AUTOINCREMENT,
+                       subject_name
+                       TEXT
+                       NOT
+                       NULL,
+                       date
+                       TEXT
+                       NOT
+                       NULL,
+                       homework_description
+                       TEXT,
+                       added_by
+                       TEXT,
+                       chat_id
+                       INTEGER,
+                       topic_id
+                       INTEGER,
+                       created_at
+                       TIMESTAMP
+                       DEFAULT
+                       CURRENT_TIMESTAMP
+                   )
+                   ''')
+
+    cursor.execute('''
+                   CREATE TABLE IF NOT EXISTS homework_files
+                   (
+                       id
+                       INTEGER
+                       PRIMARY
+                       KEY
+                       AUTOINCREMENT,
+                       homework_id
+                       INTEGER,
+                       file_name
+                       TEXT
+                       NOT
+                       NULL,
+                       file_type
+                       TEXT
+                       NOT
+                       NULL,
+                       original_name
+                       TEXT,
+                       added_by
+                       TEXT,
+                       created_at
+                       TIMESTAMP
+                       DEFAULT
+                       CURRENT_TIMESTAMP,
+                       FOREIGN
+                       KEY
+                   (
+                       homework_id
+                   ) REFERENCES homework
+                   (
+                       id
+                   ) ON DELETE CASCADE
+                       )
+                   ''')
+
+    cursor.execute('''
+                   CREATE TABLE IF NOT EXISTS birthdays
+                   (
+                       id
+                       INTEGER
+                       PRIMARY
+                       KEY
+                       AUTOINCREMENT,
+                       name
+                       TEXT
+                       NOT
+                       NULL,
+                       month
+                       INTEGER
+                       NOT
+                       NULL
+                       CHECK
+                   (
+                       month
+                       >=
+                       1
+                       AND
+                       month
+                       <=
+                       12
+                   ),
+                       day INTEGER NOT NULL CHECK
+                   (
+                       day
+                       >=
+                       1
+                       AND
+                       day
+                       <=
+                       31
+                   ),
+                       added_by TEXT,
+                       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                       )
+                   ''')
+
+    # Новая таблица для зачетов
+    cursor.execute('''
+                   CREATE TABLE IF NOT EXISTS exams
+                   (
+                       id
+                       INTEGER
+                       PRIMARY
+                       KEY
+                       AUTOINCREMENT,
+                       subject_name
+                       TEXT
+                       NOT
+                       NULL,
+                       exam_date
+                       TEXT
+                       NOT
+                       NULL,
+                       description
+                       TEXT,
+                       notification_sent_3_days
+                       BOOLEAN
+                       DEFAULT
+                       0,
+                       notification_sent_1_day
+                       BOOLEAN
+                       DEFAULT
+                       0,
+                       added_by
+                       TEXT,
+                       chat_id
+                       INTEGER,
+                       topic_id
+                       INTEGER,
+                       created_at
+                       TIMESTAMP
+                       DEFAULT
+                       CURRENT_TIMESTAMP
+                   )
+                   ''')
+
+    cursor.execute('''
+                   CREATE TABLE IF NOT EXISTS exam_files
+                   (
+                       id
+                       INTEGER
+                       PRIMARY
+                       KEY
+                       AUTOINCREMENT,
+                       exam_id
+                       INTEGER,
+                       file_name
+                       TEXT
+                       NOT
+                       NULL,
+                       file_type
+                       TEXT
+                       NOT
+                       NULL,
+                       original_name
+                       TEXT,
+                       added_by
+                       TEXT,
+                       created_at
+                       TIMESTAMP
+                       DEFAULT
+                       CURRENT_TIMESTAMP,
+                       FOREIGN
+                       KEY
+                   (
+                       exam_id
+                   ) REFERENCES exams
+                   (
+                       id
+                   ) ON DELETE CASCADE
+                       )
+                   ''')
+
+    # Обновляем структуру таблиц
+    for table in ['homework', 'homework_files']:
+        cursor.execute(f"PRAGMA table_info({table})")
+        columns = [column[1] for column in cursor.fetchall()]
+        if 'added_by' not in columns:
+            cursor.execute(f"ALTER TABLE {table} ADD COLUMN added_by TEXT")
+
+    cursor.execute("PRAGMA table_info(homework)")
+    columns = [column[1] for column in cursor.fetchall()]
+    for col in ['chat_id', 'topic_id']:
+        if col not in columns:
+            cursor.execute(f"ALTER TABLE homework ADD COLUMN {col} INTEGER")
+
+    conn.commit()
+    conn.close()
+    logger.info("База данных инициализирована")
 
 
 def get_month_name(month_num, case='genitive'):
     month_names = {
         'nominative': ['Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь',
-                      'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'],
+                       'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'],
         'genitive': ['Января', 'Февраля', 'Марта', 'Апреля', 'Мая', 'Июня',
-                    'Июля', 'Августа', 'Сентября', 'Октября', 'Ноября', 'Декабря']
+                     'Июля', 'Августа', 'Сентября', 'Октября', 'Ноября', 'Декабря']
     }
 
     if 1 <= month_num <= 12:
@@ -108,7 +335,7 @@ def save_birthdays_to_db():
         cursor.execute("DELETE FROM birthdays")
         for name, month, day in birthdays:
             cursor.execute('INSERT OR IGNORE INTO birthdays (name, month, day, added_by) VALUES (?, ?, ?, ?)',
-                          (name, month, day, "Система"))
+                           (name, month, day, "Система"))
         conn.commit()
         logger.info(f"Сохранено {len(birthdays)} дней рождения в БД")
     except Exception as e:
@@ -150,77 +377,6 @@ def get_birthdays_by_month(month):
     return birthdays
 
 
-def init_db():
-    conn = sqlite3.connect('homework.db')
-    cursor = conn.cursor()
-
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS homework (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            subject_name TEXT NOT NULL,
-            date TEXT NOT NULL,
-            homework_description TEXT,
-            added_by TEXT,
-            chat_id INTEGER,
-            topic_id INTEGER,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS homework_files (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            homework_id INTEGER,
-            file_name TEXT NOT NULL,  -- Только имя файла, без пути
-            file_type TEXT NOT NULL,
-            original_name TEXT,
-            added_by TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (homework_id) REFERENCES homework(id) ON DELETE CASCADE
-        )
-    ''')
-
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS birthdays (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            month INTEGER NOT NULL CHECK (month >= 1 AND month <= 12),
-            day INTEGER NOT NULL CHECK (day >= 1 AND day <= 31),
-            added_by TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-
-    # Обновляем структуру таблицы homework_files
-    cursor.execute("PRAGMA table_info(homework_files)")
-    columns = [column[1] for column in cursor.fetchall()]
-    
-    # Переименовываем file_path в file_name если нужно
-    if 'file_path' in columns:
-        cursor.execute('ALTER TABLE homework_files RENAME COLUMN file_path TO file_name')
-    
-    # Добавляем original_name если нет
-    if 'original_name' not in columns:
-        cursor.execute('ALTER TABLE homework_files ADD COLUMN original_name TEXT')
-
-    for table in ['homework', 'homework_files']:
-        cursor.execute(f"PRAGMA table_info({table})")
-        columns = [column[1] for column in cursor.fetchall()]
-        if 'added_by' not in columns:
-            cursor.execute(f"ALTER TABLE {table} ADD COLUMN added_by TEXT")
-
-    cursor.execute("PRAGMA table_info(homework)")
-    columns = [column[1] for column in cursor.fetchall()]
-    for col in ['chat_id', 'topic_id']:
-        if col not in columns:
-            cursor.execute(f"ALTER TABLE homework ADD COLUMN {col} INTEGER")
-
-    conn.commit()
-    conn.close()
-    save_birthdays_to_db()
-    logger.info("База данных инициализирована")
-
-
 def generate_unique_filename(original_name, file_type):
     timestamp = int(datetime.now().timestamp() * 1000)
     random_str = str(uuid.uuid4())[:8]
@@ -230,7 +386,7 @@ def generate_unique_filename(original_name, file_type):
         name_without_ext, ext = os.path.splitext(safe_name)
         if not ext:
             ext_map = {'фото': '.jpg', 'документ': '.bin', 'аудио': '.mp3',
-                      'видео': '.mp4', 'голосовое сообщение': '.ogg'}
+                       'видео': '.mp4', 'голосовое сообщение': '.ogg'}
             ext = ext_map.get(file_type, '.bin')
     else:
         name_without_ext = file_type
@@ -243,13 +399,13 @@ def save_file_locally(file_content, original_name, file_type):
     try:
         unique_filename = generate_unique_filename(original_name, file_type)
         file_path = os.path.join(FILES_DIR, unique_filename)
-        
+
         # Проверяем и создаем директорию если нужно
         os.makedirs(os.path.dirname(file_path), exist_ok=True)
-        
+
         with open(file_path, 'wb') as f:
             f.write(file_content)
-        
+
         logger.info(f"Файл сохранен: {file_path}")
         return unique_filename  # Возвращаем только имя файла, не полный путь
     except Exception as e:
@@ -258,13 +414,20 @@ def save_file_locally(file_content, original_name, file_type):
 
 
 def create_main_menu():
+    """Создает главное меню (доступно всем)"""
     markup = types.InlineKeyboardMarkup(row_width=2)
-    markup.add(
+    buttons = [
         types.InlineKeyboardButton('📚 ДЗ', callback_data='homework_submenu'),
         types.InlineKeyboardButton('👨‍🏫 Учителя', callback_data='teacher_name_menu'),
         types.InlineKeyboardButton('🎂 Дни рождения', callback_data='birthdays_menu'),
+        types.InlineKeyboardButton('📋 Ближайший зачёт', callback_data='exams_menu'),
         types.InlineKeyboardButton('ℹ️ Помощь', callback_data='help_menu')
-    )
+    ]
+
+    for i in range(0, len(buttons), 2):
+        row = buttons[i:i + 2]
+        markup.row(*row)
+
     return markup
 
 
@@ -305,6 +468,27 @@ def create_back_to_menu_button():
     return markup
 
 
+def create_exams_menu(user_id):
+    """Меню управления зачетами (разное для админа и обычных пользователей)"""
+    markup = types.InlineKeyboardMarkup(row_width=2)
+
+    # Эти кнопки доступны всем
+    markup.add(
+        types.InlineKeyboardButton('📋 Все зачёты', callback_data='view_exams_menu'),
+        types.InlineKeyboardButton('📅 Ближайшие зачёты', callback_data='upcoming_exams_menu')
+    )
+
+    # Кнопки добавления/управления только для админа
+    if is_admin(user_id):
+        markup.add(
+            types.InlineKeyboardButton('📝 Добавить зачёт', callback_data='add_exam_menu'),
+            types.InlineKeyboardButton('🗑️ Удалить зачёт', callback_data='delete_exam_menu')
+        )
+
+    markup.add(types.InlineKeyboardButton('🔙 Назад', callback_data='main_menu'))
+    return markup
+
+
 def show_birthdays_for_month(call, month_num):
     birthdays = get_birthdays_by_month(month_num)
     month_name_nominative = get_month_name(month_num, 'nominative')
@@ -330,38 +514,118 @@ def show_birthdays_for_month(call, month_num):
     )
 
 
-def check_topic_access(message):
-    if TOPIC_ID is None:
-        return True
-    if message.chat.type in ['group', 'supergroup']:
-        if hasattr(message, 'message_thread_id'):
-            return message.message_thread_id == TOPIC_ID
-    return False
+def check_exam_notifications():
+    """Проверяет и отправляет уведомления о ближайших зачетах"""
+    try:
+        conn = sqlite3.connect('homework.db')
+        cursor = conn.cursor()
+        today = datetime.now().date()
+
+        # Проверяем зачеты через 3 дня
+        three_days_later = today + timedelta(days=3)
+        cursor.execute('''
+                       SELECT id, subject_name, exam_date, description
+                       FROM exams
+                       WHERE exam_date = ?
+                         AND notification_sent_3_days = 0
+                       ''', (three_days_later.strftime('%Y-%m-%d'),))
+
+        exams_3_days = cursor.fetchall()
+
+        for exam in exams_3_days:
+            exam_id, subject_name, exam_date, description = exam
+            notification_text = f"🔔 Напоминание о зачете!\n\n"
+            notification_text += f"📚 Предмет: {subject_name}\n"
+            notification_text += f"📅 Дата: {datetime.strptime(exam_date, '%Y-%m-%d').strftime('%d.%m.%Y')}\n"
+            if description:
+                notification_text += f"📝 Описание: {description}\n"
+            notification_text += f"\n⏰ До зачета осталось 3 дня!"
+
+            try:
+                bot.send_message(NOTIFICATION_CHAT_ID, notification_text)
+                cursor.execute('UPDATE exams SET notification_sent_3_days = 1 WHERE id = ?', (exam_id,))
+                logger.info(f"Отправлено уведомление за 3 дня до зачета: {subject_name}")
+            except Exception as e:
+                logger.error(f"Ошибка отправки уведомления за 3 дня: {e}")
+
+        # Проверяем зачеты через 1 день
+        one_day_later = today + timedelta(days=1)
+        cursor.execute('''
+                       SELECT id, subject_name, exam_date, description
+                       FROM exams
+                       WHERE exam_date = ?
+                         AND notification_sent_1_day = 0
+                       ''', (one_day_later.strftime('%Y-%m-%d'),))
+
+        exams_1_day = cursor.fetchall()
+
+        for exam in exams_1_day:
+            exam_id, subject_name, exam_date, description = exam
+            notification_text = f"🔔 СРОЧНОЕ напоминание о зачете!\n\n"
+            notification_text += f"📚 Предмет: {subject_name}\n"
+            notification_text += f"📅 Дата: {datetime.strptime(exam_date, '%Y-%m-%d').strftime('%d.%m.%Y')}\n"
+            if description:
+                notification_text += f"📝 Описание: {description}\n"
+            notification_text += f"\n⏰ Зачет ЗАВТРА!"
+
+            try:
+                bot.send_message(NOTIFICATION_CHAT_ID, notification_text)
+                cursor.execute('UPDATE exams SET notification_sent_1_day = 1 WHERE id = ?', (exam_id,))
+                logger.info(f"Отправлено уведомление за 1 день до зачета: {subject_name}")
+            except Exception as e:
+                logger.error(f"Ошибка отправки уведомления за 1 день: {e}")
+
+        conn.commit()
+        conn.close()
+
+    except Exception as e:
+        logger.error(f"Ошибка в функции проверки уведомлений: {e}")
+
+
+def notification_scheduler():
+    """Планировщик для проверки уведомлений"""
+    while True:
+        try:
+            check_exam_notifications()
+            # Проверяем каждые 6 часов
+            threading.Event().wait(6 * 3600)
+        except Exception as e:
+            logger.error(f"Ошибка в планировщике уведомлений: {e}")
+            threading.Event().wait(300)  # Ждем 5 минут при ошибке
 
 
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     global CONSOLE_CHAT_ID
     CONSOLE_CHAT_ID = message.chat.id
-    logger.info(f"ID чата: {CONSOLE_CHAT_ID}")
+    logger.info(
+        f"Пользователь {message.from_user.id} ({message.from_user.username}) запустил бота в чате {CONSOLE_CHAT_ID}")
 
-    if not check_topic_access(message):
-        return
-
-    help_text = "👋 Привет! Я бот для управления домашними заданиями.\n\n👇 <b>Выберите действие:</b>"
+    # Для /start разрешаем всегда
+    help_text = "👋 Привет! Я бот для управления домашними заданиями и зачетами.\n\n👇 <b>Выберите действие:</b>"
 
     if message.chat.type in ['group', 'supergroup'] and TOPIC_ID is not None:
-        bot.send_message(message.chat.id, help_text, parse_mode='HTML',
-                        reply_markup=create_main_menu(), message_thread_id=TOPIC_ID)
+        try:
+            bot.send_message(message.chat.id, help_text, parse_mode='HTML',
+                             reply_markup=create_main_menu(),
+                             message_thread_id=TOPIC_ID)
+        except Exception as e:
+            logger.error(f"Ошибка отправки сообщения в группе: {e}")
+            bot.send_message(message.chat.id, help_text, parse_mode='HTML',
+                             reply_markup=create_main_menu())
     else:
         bot.send_message(message.chat.id, help_text, parse_mode='HTML',
-                        reply_markup=create_main_menu())
+                         reply_markup=create_main_menu())
 
 
 @bot.message_handler(commands=['help'])
 def help_command(message):
-    if not check_topic_access(message):
-        return
+    user_id = message.from_user.id
+
+    # Определяем thread_id для ответа
+    thread_id = None
+    if message.chat.type in ['group', 'supergroup'] and hasattr(message, 'message_thread_id'):
+        thread_id = message.message_thread_id
 
     help_text = """
 📚 <b>Доступные команды:</b>
@@ -374,7 +638,16 @@ def help_command(message):
 <code>/add_birthday</code> - Добавить день рождения
 <code>/cancel</code> - Отменить операцию
 <code>/help</code> - Справка
+<code>/admin_help</code> - Команды администратора
+    """
 
+    # Добавляем информацию о командах админа, если пользователь - админ
+    if is_admin(user_id):
+        help_text += "\n\n🛠️ <b>Команды администратора:</b>\n"
+        help_text += "<code>/del_mes</code> - удалить сообщение (ответьте на него)\n"
+        help_text += f"<code>/clear X</code> - удалить последние X сообщений (только в топике {TOPIC_ID})\n"
+
+    help_text += """
 💡 <b>Особенности:</b>
 • Все задания общие для всех
 • Можно прикреплять несколько файлов
@@ -383,12 +656,8 @@ def help_command(message):
 • Задания может удалить любой пользователь
     """
 
-    if message.chat.type in ['group', 'supergroup'] and TOPIC_ID is not None:
-        bot.send_message(message.chat.id, help_text, parse_mode='HTML',
-                        reply_markup=create_back_to_menu_button(), message_thread_id=TOPIC_ID)
-    else:
-        bot.send_message(message.chat.id, help_text, parse_mode='HTML',
-                        reply_markup=create_back_to_menu_button())
+    bot.send_message(message.chat.id, help_text, parse_mode='HTML',
+                     reply_markup=create_back_to_menu_button(), message_thread_id=thread_id)
 
 
 @bot.message_handler(commands=['add_homework'])
@@ -421,13 +690,15 @@ def add_homework_command(message):
 
     if message.chat.type in ['group', 'supergroup'] and TOPIC_ID is not None:
         bot.send_message(message.chat.id, text, parse_mode='HTML',
-                        reply_markup=create_back_to_menu_button(), message_thread_id=TOPIC_ID)
+                         reply_markup=create_back_to_menu_button(), message_thread_id=TOPIC_ID)
     else:
         bot.send_message(message.chat.id, text, parse_mode='HTML',
-                        reply_markup=create_back_to_menu_button())
+                         reply_markup=create_back_to_menu_button())
 
 
-@bot.message_handler(func=lambda message: message.from_user.id in user_data and user_data.get(message.from_user.id, {}).get('step') == 'subject_name')
+@bot.message_handler(
+    func=lambda message: message.from_user.id in user_data and user_data.get(message.from_user.id, {}).get(
+        'step') == 'subject_name')
 def process_subject_name(message):
     if not check_topic_access(message):
         return
@@ -448,7 +719,9 @@ def process_subject_name(message):
         bot.send_message(message.chat.id, text, parse_mode='HTML')
 
 
-@bot.message_handler(func=lambda message: message.from_user.id in user_data and user_data.get(message.from_user.id, {}).get('step') == 'homework_description')
+@bot.message_handler(
+    func=lambda message: message.from_user.id in user_data and user_data.get(message.from_user.id, {}).get(
+        'step') == 'homework_description')
 def process_homework_description(message):
     if not check_topic_access(message):
         return
@@ -469,7 +742,9 @@ def process_homework_description(message):
         bot.send_message(message.chat.id, text, parse_mode='HTML')
 
 
-@bot.message_handler(func=lambda message: message.from_user.id in user_data and user_data.get(message.from_user.id, {}).get('step') == 'date')
+@bot.message_handler(
+    func=lambda message: message.from_user.id in user_data and user_data.get(message.from_user.id, {}).get(
+        'step') == 'date')
 def process_date(message):
     if not check_topic_access(message):
         return
@@ -505,7 +780,7 @@ def process_date(message):
 
         if message.chat.type in ['group', 'supergroup'] and TOPIC_ID is not None:
             bot.send_message(message.chat.id, text, parse_mode='HTML',
-                            reply_markup=markup, message_thread_id=TOPIC_ID)
+                             reply_markup=markup, message_thread_id=TOPIC_ID)
         else:
             bot.send_message(message.chat.id, text, parse_mode='HTML', reply_markup=markup)
 
@@ -521,6 +796,8 @@ def process_date(message):
 def handle_all_callbacks(call):
     user_id = call.from_user.id
     chat_id = call.message.chat.id
+
+    logger.info(f"Обработка callback от пользователя {user_id}: {call.data}")
 
     if TOPIC_ID is not None and chat_id == call.message.chat.id:
         if call.message.chat.type in ['group', 'supergroup']:
@@ -562,6 +839,55 @@ def handle_all_callbacks(call):
         month_num = int(call.data.replace('birthdays_month_', ''))
         bot.answer_callback_query(call.id)
         show_birthdays_for_month(call, month_num)
+
+    elif call.data == 'exams_menu':
+        bot.answer_callback_query(call.id)
+        bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=call.message.message_id,
+            text="📋 <b>Управление зачетами</b>\n\n👇 Выберите действие:",
+            parse_mode='HTML',
+            reply_markup=create_exams_menu(user_id)
+        )
+
+    elif call.data == 'add_exam_menu':
+        bot.answer_callback_query(call.id)
+        if is_admin(user_id):
+            # Начинаем процесс добавления зачета
+            add_exam_command_handler(call.message)
+        else:
+            bot.answer_callback_query(call.id, "❌ У вас нет прав для добавления зачетов")
+
+    elif call.data == 'delete_exam_menu':
+        bot.answer_callback_query(call.id)
+        if is_admin(user_id):
+            # Показываем список зачетов для удаления
+            show_exams_for_deletion(call)
+        else:
+            bot.answer_callback_query(call.id, "❌ У вас нет прав для удаления зачетов")
+
+    elif call.data == 'view_exams_menu':
+        bot.answer_callback_query(call.id)
+        # Показываем все зачеты (доступно всем)
+        show_exam_dates_list(call)
+
+    elif call.data == 'upcoming_exams_menu':
+        bot.answer_callback_query(call.id)
+        # Показываем ближайшие зачеты (доступно всем)
+        show_upcoming_exams(call)
+
+    elif call.data.startswith('view_exam_date_'):
+        date_str = call.data.replace('view_exam_date_', '')
+        # Показываем зачеты на конкретную дату (доступно всем, но с разными кнопками)
+        show_exams_for_date(call, date_str, user_id)
+
+    elif call.data.startswith('delete_exam_'):
+        exam_id = int(call.data.replace('delete_exam_', ''))
+        # Удаление зачета (только для админа)
+        if is_admin(user_id):
+            delete_exam_callback(call, exam_id)
+        else:
+            bot.answer_callback_query(call.id, "❌ У вас нет прав для удаления зачетов")
 
     elif call.data == 'add_homework_menu':
         bot.answer_callback_query(call.id)
@@ -628,7 +954,7 @@ def handle_all_callbacks(call):
         show_dates_list(call)
 
     elif call.data in ['Математика', 'Информатика', 'Физика', 'История', 'Биология', 'ОБЖ',
-                      'Химия', 'Литература', 'Русский', 'Английский', 'Физра', 'ВВС', 'Общество']:
+                       'Химия', 'Литература', 'Русский', 'Английский', 'Физра', 'ВВС', 'Общество']:
         bot.answer_callback_query(call.id)
         show_teacher_info(call)
 
@@ -678,10 +1004,10 @@ def handle_add_callback(call):
 def show_teachers_menu(call):
     markup = types.InlineKeyboardMarkup(row_width=2)
     subjects = ['Математика', 'Информатика', 'Физика', 'История', 'Биология', 'ОБЖ',
-               'Химия', 'Литература', 'Русский', 'Английский', 'Физра', 'ВВС', 'Общество']
+                'Химия', 'Литература', 'Русский', 'Английский', 'Физра', 'ВВС', 'Общество']
 
     for i in range(0, len(subjects), 3):
-        row = subjects[i:i+3]
+        row = subjects[i:i + 3]
         markup.row(*[types.InlineKeyboardButton(subj, callback_data=subj) for subj in row])
 
     markup.row(types.InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu"))
@@ -737,6 +1063,7 @@ def show_help_menu(call):
 <code>/add_birthday</code> - Добавить день рождения
 <code>/cancel</code> - Отменить операцию
 <code>/help</code> - Справка
+<code>/admin_help</code> - Команды администратора
 
 💡 <b>Особенности:</b>
 • Все задания общие для всех
@@ -845,10 +1172,11 @@ def finish_adding_files(message):
 
             if message.chat.type in ['group', 'supergroup'] and TOPIC_ID is not None:
                 bot.send_message(message.chat.id, response + "\n\n🏠 Вы можете вернуться в главное меню:",
-                                parse_mode='HTML', reply_markup=create_back_to_menu_button(), message_thread_id=TOPIC_ID)
+                                 parse_mode='HTML', reply_markup=create_back_to_menu_button(),
+                                 message_thread_id=TOPIC_ID)
             else:
                 bot.send_message(message.chat.id, response + "\n\n🏠 Вы можете вернуться в главное меню:",
-                                parse_mode='HTML', reply_markup=create_back_to_menu_button())
+                                 parse_mode='HTML', reply_markup=create_back_to_menu_button())
 
             if user_id in user_data:
                 del user_data[user_id]
@@ -869,10 +1197,10 @@ def skip_adding_files(message):
 
             if message.chat.type in ['group', 'supergroup'] and TOPIC_ID is not None:
                 bot.send_message(message.chat.id, text, parse_mode='HTML',
-                                reply_markup=create_back_to_menu_button(), message_thread_id=TOPIC_ID)
+                                 reply_markup=create_back_to_menu_button(), message_thread_id=TOPIC_ID)
             else:
                 bot.send_message(message.chat.id, text, parse_mode='HTML',
-                                reply_markup=create_back_to_menu_button())
+                                 reply_markup=create_back_to_menu_button())
 
             if user_id in user_data:
                 del user_data[user_id]
@@ -887,10 +1215,10 @@ def view_all_homework(message):
 
     if message.chat.type in ['group', 'supergroup'] and TOPIC_ID is not None:
         bot.send_message(message.chat.id, "📚 <b>Домашние задания</b>\n\n👇 Выберите действие:",
-                        parse_mode='HTML', reply_markup=create_homework_submenu(), message_thread_id=TOPIC_ID)
+                         parse_mode='HTML', reply_markup=create_homework_submenu(), message_thread_id=TOPIC_ID)
     else:
         bot.send_message(message.chat.id, "📚 <b>Домашние задания</b>\n\n👇 Выберите действие:",
-                        parse_mode='HTML', reply_markup=create_homework_submenu())
+                         parse_mode='HTML', reply_markup=create_homework_submenu())
 
 
 def show_dates_list(call):
@@ -935,7 +1263,8 @@ def show_dates_list(call):
             count = cursor.fetchone()[0]
             conn.close()
 
-            buttons.append(types.InlineKeyboardButton(f"📅 {formatted_date} ({count})", callback_data=f"view_date_{date_str}"))
+            buttons.append(
+                types.InlineKeyboardButton(f"📅 {formatted_date} ({count})", callback_data=f"view_date_{date_str}"))
         except Exception as e:
             logger.error(f"Ошибка при форматировании даты: {e}")
             continue
@@ -966,20 +1295,23 @@ def show_homework_for_date_callback(call, date_str):
 
     if chat_id:
         cursor.execute('''
-            SELECT h.id, h.subject_name, h.homework_description, h.added_by, COUNT(f.id) as file_count
-            FROM homework h LEFT JOIN homework_files f ON h.id = f.homework_id
-            WHERE h.date = ? AND h.chat_id = ?
-            GROUP BY h.id, h.subject_name, h.homework_description, h.added_by
-            ORDER BY h.created_at
-        ''', (date_str, chat_id))
+                       SELECT h.id, h.subject_name, h.homework_description, h.added_by, COUNT(f.id) as file_count
+                       FROM homework h
+                                LEFT JOIN homework_files f ON h.id = f.homework_id
+                       WHERE h.date = ?
+                         AND h.chat_id = ?
+                       GROUP BY h.id, h.subject_name, h.homework_description, h.added_by
+                       ORDER BY h.created_at
+                       ''', (date_str, chat_id))
     else:
         cursor.execute('''
-            SELECT h.id, h.subject_name, h.homework_description, h.added_by, COUNT(f.id) as file_count
-            FROM homework h LEFT JOIN homework_files f ON h.id = f.homework_id
-            WHERE h.date = ?
-            GROUP BY h.id, h.subject_name, h.homework_description, h.added_by
-            ORDER BY h.created_at
-        ''', (date_str,))
+                       SELECT h.id, h.subject_name, h.homework_description, h.added_by, COUNT(f.id) as file_count
+                       FROM homework h
+                                LEFT JOIN homework_files f ON h.id = f.homework_id
+                       WHERE h.date = ?
+                       GROUP BY h.id, h.subject_name, h.homework_description, h.added_by
+                       ORDER BY h.created_at
+                       ''', (date_str,))
 
     homework_list = cursor.fetchall()
     conn.close()
@@ -1045,7 +1377,8 @@ def show_homework_files(call, hw_id):
         return
 
     subject_name, homework_description, added_by = hw_info
-    cursor.execute('SELECT file_name, file_type, original_name, added_by FROM homework_files WHERE homework_id = ?', (hw_id,))
+    cursor.execute('SELECT file_name, file_type, original_name, added_by FROM homework_files WHERE homework_id = ?',
+                   (hw_id,))
     files = cursor.fetchall()
     conn.close()
 
@@ -1072,7 +1405,7 @@ def show_homework_files(call, hw_id):
         try:
             # Формируем полный путь к файлу
             file_path = os.path.join(FILES_DIR, file_name)
-            
+
             if os.path.exists(file_path):
                 logger.info(f"Отправка файла: {file_path}")
                 with open(file_path, 'rb') as file:
@@ -1084,7 +1417,7 @@ def show_homework_files(call, hw_id):
                     # Определяем функцию для отправки файла
                     send_func = None
                     params = {}
-                    
+
                     if file_type == 'фото':
                         send_func = bot.send_photo
                         params = {'caption': caption}
@@ -1100,7 +1433,7 @@ def show_homework_files(call, hw_id):
                     elif file_type == 'голосовое сообщение':
                         send_func = bot.send_voice
                         params = {'caption': caption}
-                    
+
                     if send_func:
                         if chat_id and TOPIC_ID is not None:
                             send_func(chat_id, file_data, message_thread_id=TOPIC_ID, **params)
@@ -1191,20 +1524,20 @@ def subject(message):
 
     markup = types.InlineKeyboardMarkup(row_width=2)
     subjects = ['Математика', 'Информатика', 'Физика', 'История', 'Биология', 'ОБЖ',
-               'Химия', 'Литература', 'Русский', 'Английский', 'Физра', 'ВВС', 'Общество']
+                'Химия', 'Литература', 'Русский', 'Английский', 'Физра', 'ВВС', 'Общество']
 
     for i in range(0, len(subjects), 3):
-        row = subjects[i:i+3]
+        row = subjects[i:i + 3]
         markup.row(*[types.InlineKeyboardButton(subj, callback_data=subj) for subj in row])
 
     markup.row(types.InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu"))
 
     if message.chat.type in ['group', 'supergroup'] and TOPIC_ID is not None:
         bot.send_message(message.chat.id, '👨‍🏫 <b>Выберите предмет:</b>', parse_mode='HTML',
-                        reply_markup=markup, message_thread_id=TOPIC_ID)
+                         reply_markup=markup, message_thread_id=TOPIC_ID)
     else:
         bot.send_message(message.chat.id, '👨‍🏫 <b>Выберите предмет:</b>', parse_mode='HTML',
-                        reply_markup=markup)
+                         reply_markup=markup)
 
 
 @bot.message_handler(commands=['add_birthday'])
@@ -1226,13 +1559,15 @@ def add_birthday_command(message):
 
     if message.chat.type in ['group', 'supergroup'] and TOPIC_ID is not None:
         bot.send_message(message.chat.id, text, parse_mode='HTML',
-                        reply_markup=create_back_to_menu_button(), message_thread_id=TOPIC_ID)
+                         reply_markup=create_back_to_menu_button(), message_thread_id=TOPIC_ID)
     else:
         bot.send_message(message.chat.id, text, parse_mode='HTML',
-                        reply_markup=create_back_to_menu_button())
+                         reply_markup=create_back_to_menu_button())
 
 
-@bot.message_handler(func=lambda message: message.from_user.id in user_data and user_data.get(message.from_user.id, {}).get('step') == 'birthday_name')
+@bot.message_handler(
+    func=lambda message: message.from_user.id in user_data and user_data.get(message.from_user.id, {}).get(
+        'step') == 'birthday_name')
 def process_birthday_name(message):
     if not check_topic_access(message):
         return
@@ -1253,7 +1588,9 @@ def process_birthday_name(message):
         bot.send_message(message.chat.id, text, parse_mode='HTML')
 
 
-@bot.message_handler(func=lambda message: message.from_user.id in user_data and user_data.get(message.from_user.id, {}).get('step') == 'birthday_month')
+@bot.message_handler(
+    func=lambda message: message.from_user.id in user_data and user_data.get(message.from_user.id, {}).get(
+        'step') == 'birthday_month')
 def process_birthday_month(message):
     if not check_topic_access(message):
         return
@@ -1286,7 +1623,9 @@ def process_birthday_month(message):
             bot.send_message(message.chat.id, text, parse_mode='HTML')
 
 
-@bot.message_handler(func=lambda message: message.from_user.id in user_data and user_data.get(message.from_user.id, {}).get('step') == 'birthday_day')
+@bot.message_handler(
+    func=lambda message: message.from_user.id in user_data and user_data.get(message.from_user.id, {}).get(
+        'step') == 'birthday_day')
 def process_birthday_day(message):
     if not check_topic_access(message):
         return
@@ -1312,7 +1651,7 @@ def process_birthday_day(message):
             conn = sqlite3.connect('homework.db')
             cursor = conn.cursor()
             cursor.execute('INSERT OR IGNORE INTO birthdays (name, month, day, added_by) VALUES (?, ?, ?, ?)',
-                          (name, month, day, added_by))
+                           (name, month, day, added_by))
             conn.commit()
             conn.close()
 
@@ -1324,7 +1663,7 @@ def process_birthday_day(message):
 
             if message.chat.type in ['group', 'supergroup'] and TOPIC_ID is not None:
                 bot.send_message(message.chat.id, response, parse_mode='HTML',
-                                reply_markup=markup, message_thread_id=TOPIC_ID)
+                                 reply_markup=markup, message_thread_id=TOPIC_ID)
             else:
                 bot.send_message(message.chat.id, response, parse_mode='HTML', reply_markup=markup)
         else:
@@ -1375,30 +1714,30 @@ def save_homework_to_db(user_id):
         cursor = conn.cursor()
 
         cursor.execute('''
-            INSERT INTO homework (subject_name, date, homework_description, added_by, chat_id, topic_id)
-            VALUES (?, ?, ?, ?, ?, ?)
-        ''', (
-            user_data[user_id].get('subject_name', ''),
-            user_data[user_id].get('date', ''),
-            user_data[user_id].get('homework_description', ''),
-            user_data[user_id].get('added_by', 'Аноним'),
-            user_data[user_id].get('chat_id'),
-            user_data[user_id].get('topic_id')
-        ))
+                       INSERT INTO homework (subject_name, date, homework_description, added_by, chat_id, topic_id)
+                       VALUES (?, ?, ?, ?, ?, ?)
+                       ''', (
+                           user_data[user_id].get('subject_name', ''),
+                           user_data[user_id].get('date', ''),
+                           user_data[user_id].get('homework_description', ''),
+                           user_data[user_id].get('added_by', 'Аноним'),
+                           user_data[user_id].get('chat_id'),
+                           user_data[user_id].get('topic_id')
+                       ))
 
         homework_id = cursor.lastrowid
 
         for file_data in user_data[user_id].get('files', []):
             cursor.execute('''
-                INSERT INTO homework_files (homework_id, file_name, file_type, original_name, added_by)
-                VALUES (?, ?, ?, ?, ?)
-            ''', (
-                homework_id,
-                file_data.get('file_name'),
-                file_data['file_type'],
-                file_data.get('original_name', ''),
-                user_data[user_id].get('added_by', 'Аноним')
-            ))
+                           INSERT INTO homework_files (homework_id, file_name, file_type, original_name, added_by)
+                           VALUES (?, ?, ?, ?, ?)
+                           ''', (
+                               homework_id,
+                               file_data.get('file_name'),
+                               file_data['file_type'],
+                               file_data.get('original_name', ''),
+                               user_data[user_id].get('added_by', 'Аноним')
+                           ))
 
         conn.commit()
         files_count = len(user_data[user_id].get('files', []))
@@ -1447,10 +1786,776 @@ def cancel_operation(message):
     markup = create_back_to_menu_button()
     if message.chat.type in ['group', 'supergroup'] and TOPIC_ID is not None:
         bot.send_message(message.chat.id, "❌ Операция отменена.\n\n🏠 Вы можете вернуться в главное меню.",
-                        reply_markup=markup, message_thread_id=TOPIC_ID)
+                         reply_markup=markup, message_thread_id=TOPIC_ID)
     else:
         bot.send_message(message.chat.id, "❌ Операция отменена.\n\n🏠 Вы можете вернуться в главное меню.",
-                        reply_markup=markup)
+                         reply_markup=markup)
+
+
+# Команды для администратора
+@bot.message_handler(commands=['del_mes'])
+def delete_message_command(message):
+    """Удаляет сообщение, на которое ответили (только для администратора)"""
+    logger.info(f"Команда /del_mes вызвана пользователем {message.from_user.id}")
+
+    # НЕ проверяем check_topic_access для этой команды - она должна работать везде
+    user_id = message.from_user.id
+
+    # Проверяем права администратора
+    if not is_admin(user_id):
+        logger.warning(f"Пользователь {user_id} попытался использовать /del_mes без прав")
+        try:
+            bot.reply_to(message, "❌ У вас нет прав для удаления сообщений")
+        except:
+            pass
+        return
+
+    # Проверяем, есть ли reply_to_message
+    if not message.reply_to_message:
+        logger.warning(f"Админ {user_id} использовал /del_mes без ответа на сообщение")
+        try:
+            bot.reply_to(message, "❌ Ответьте на сообщение, которое нужно удалить")
+        except:
+            pass
+        return
+
+    try:
+        # Получаем информацию о чате и топике
+        chat_id = message.chat.id
+        target_message_id = message.reply_to_message.message_id
+
+        # Определяем thread_id для ответа
+        thread_id = None
+        if hasattr(message, 'message_thread_id'):
+            thread_id = message.message_thread_id
+
+        # Логируем попытку удаления
+        logger.info(f"Админ {user_id} удаляет сообщение {target_message_id} в чате {chat_id}, топик: {thread_id}")
+
+        # Удаляем целевое сообщение
+        bot.delete_message(chat_id, target_message_id)
+
+        # Удаляем сообщение с командой /del_mes
+        try:
+            bot.delete_message(chat_id, message.message_id)
+        except:
+            pass
+
+        # Отправляем подтверждение
+        confirm_text = "✅ Сообщение удалено"
+        try:
+            if thread_id and chat_id != thread_id:  # Если это группа с топиками
+                confirm_msg = bot.send_message(chat_id, confirm_text, message_thread_id=thread_id)
+            else:
+                confirm_msg = bot.send_message(chat_id, confirm_text)
+
+            # Удаляем подтверждение через 3 секунды
+            threading.Timer(3.0, lambda: bot.delete_message(chat_id, confirm_msg.message_id)).start()
+
+        except Exception as e:
+            logger.error(f"Ошибка отправки подтверждения: {e}")
+
+        logger.info(f"Сообщение {target_message_id} успешно удалено админом {user_id}")
+
+    except Exception as e:
+        logger.error(f"Ошибка при удалении сообщения: {e}")
+        error_text = f"❌ Не удалось удалить сообщение. Ошибка: {str(e)}"
+        try:
+            bot.reply_to(message, error_text)
+        except:
+            pass
+
+
+@bot.message_handler(commands=['clear'])
+def clear_messages_command(message):
+    """Удаляет несколько последних сообщений (только для администратора и только в топике 60817)"""
+    logger.info(f"Команда /clear вызвана пользователем {message.from_user.id}")
+
+    # Проверяем, что команда в правильном топике
+    if not is_in_correct_topic(message):
+        logger.warning(f"Попытка использования /clear вне топика {TOPIC_ID} от пользователя {message.from_user.id}")
+
+        # Определяем thread_id для ответа
+        thread_id = None
+        if hasattr(message, 'message_thread_id'):
+            thread_id = message.message_thread_id
+
+        error_text = f"❌ Команда /clear доступна только в топике {TOPIC_ID}"
+        try:
+            if thread_id:
+                bot.send_message(message.chat.id, error_text, message_thread_id=thread_id)
+            else:
+                bot.send_message(message.chat.id, error_text)
+        except:
+            pass
+        return
+
+    user_id = message.from_user.id
+
+    # Проверяем права администратора
+    if not is_admin(user_id):
+        logger.warning(f"Пользователь {user_id} попытался использовать /clear без прав")
+        try:
+            bot.reply_to(message, "❌ У вас нет прав для удаления сообщений")
+        except:
+            pass
+        return
+
+    # Получаем аргументы команды
+    args = message.text.split()
+
+    if len(args) != 2:
+        logger.warning(f"Админ {user_id} использовал /clear с неправильным количеством аргументов: {message.text}")
+        help_text = "❌ Неправильный формат команды.\nИспользуйте: /clear <количество_сообщений>\nПример: /clear 5"
+
+        thread_id = None
+        if hasattr(message, 'message_thread_id'):
+            thread_id = message.message_thread_id
+
+        try:
+            if thread_id:
+                bot.send_message(message.chat.id, help_text, message_thread_id=thread_id)
+            else:
+                bot.send_message(message.chat.id, help_text)
+        except:
+            pass
+        return
+
+    try:
+        # Пытаемся преобразовать аргумент в число
+        count = int(args[1])
+
+        # Проверяем, что число положительное и не слишком большое
+        if count <= 0:
+            raise ValueError("Число должно быть положительным")
+        if count > 100:
+            raise ValueError("Нельзя удалять более 100 сообщений за раз")
+
+        # Получаем ID текущего сообщения
+        chat_id = message.chat.id
+        current_message_id = message.message_id
+
+        # Определяем thread_id для ответа
+        thread_id = None
+        if hasattr(message, 'message_thread_id'):
+            thread_id = message.message_thread_id
+
+        # Логируем попытку удаления
+        logger.info(f"Админ {user_id} удаляет {count} сообщений в чате {chat_id}, топик: {thread_id}")
+
+        # Отправляем сообщение о начале удаления
+        try:
+            if thread_id:
+                progress_msg = bot.send_message(chat_id, f"⏳ Удаление {count} сообщений...",
+                                                message_thread_id=thread_id)
+            else:
+                progress_msg = bot.send_message(chat_id, f"⏳ Удаление {count} сообщений...")
+        except Exception as e:
+            logger.error(f"Ошибка отправки прогресса: {e}")
+            progress_msg = None
+
+        deleted_count = 0
+        errors = []
+
+        # Удаляем сообщения в обратном порядке (от новых к старым)
+        # Начинаем с текущего сообщения и идем вниз
+        for msg_id in range(current_message_id, current_message_id - count, -1):
+            try:
+                # Пропускаем сообщение с прогрессом
+                if progress_msg and msg_id == progress_msg.message_id:
+                    continue
+
+                bot.delete_message(chat_id, msg_id)
+                deleted_count += 1
+
+                # Небольшая задержка, чтобы не превысить лимиты API
+                if deleted_count % 10 == 0:
+                    threading.Event().wait(0.1)
+
+            except Exception as e:
+                error_msg = f"ID {msg_id}: {str(e)}"
+                errors.append(error_msg)
+                logger.warning(f"Не удалось удалить сообщение {msg_id}: {e}")
+                continue
+
+        # Пытаемся удалить сообщение о прогрессе
+        if progress_msg:
+            try:
+                bot.delete_message(chat_id, progress_msg.message_id)
+            except Exception as e:
+                logger.warning(f"Не удалось удалить сообщение о прогрессе: {e}")
+
+        # Отправляем отчет об удалении
+        if errors:
+            report = f"✅ Удалено {deleted_count} из {count} сообщений.\n"
+            report += f"❌ Не удалось удалить {len(errors)} сообщений."
+        else:
+            report = f"✅ Успешно удалено {deleted_count} сообщений."
+
+        try:
+            if thread_id:
+                report_msg = bot.send_message(chat_id, report, message_thread_id=thread_id)
+            else:
+                report_msg = bot.send_message(chat_id, report)
+
+            # Удаляем отчет через 5 секунд
+            threading.Timer(5.0, lambda: bot.delete_message(chat_id, report_msg.message_id)).start()
+
+        except Exception as e:
+            logger.error(f"Ошибка отправки отчета: {e}")
+
+        logger.info(f"Админ {user_id} удалил {deleted_count} сообщений")
+
+    except ValueError as e:
+        logger.error(f"Ошибка в аргументе /clear: {e}")
+        error_text = f"❌ Ошибка: {str(e)}\nИспользуйте положительное число (не более 100)."
+
+        thread_id = None
+        if hasattr(message, 'message_thread_id'):
+            thread_id = message.message_thread_id
+
+        try:
+            if thread_id:
+                bot.send_message(message.chat.id, error_text, message_thread_id=thread_id)
+            else:
+                bot.send_message(message.chat.id, error_text)
+        except:
+            pass
+    except Exception as e:
+        logger.error(f"Неизвестная ошибка в /clear: {e}")
+        error_text = f"❌ Произошла ошибка при удалении сообщений: {str(e)}"
+
+        thread_id = None
+        if hasattr(message, 'message_thread_id'):
+            thread_id = message.message_thread_id
+
+        try:
+            if thread_id:
+                bot.send_message(message.chat.id, error_text, message_thread_id=thread_id)
+            else:
+                bot.send_message(message.chat.id, error_text)
+        except:
+            pass
+
+
+@bot.message_handler(commands=['clear_all'])
+def clear_all_messages_command(message):
+    """Удаляет все сообщения в топике (только для администратора и только в топике 60817) - ОПАСНАЯ КОМАНДА"""
+    # Проверяем, что команда в правильном топике
+    if not is_in_correct_topic(message):
+        logger.warning(f"Попытка использования /clear_all вне топика {TOPIC_ID} от пользователя {message.from_user.id}")
+        error_text = f"❌ Команда /clear_all доступна только в топике {TOPIC_ID}"
+        bot.send_message(message.chat.id, error_text)
+        return
+
+    user_id = message.from_user.id
+
+    # Проверяем права администратора
+    if not is_admin(user_id):
+        logger.warning(f"Пользователь {user_id} попытался использовать /clear_all без прав")
+        bot.send_message(message.chat.id, "❌ У вас нет прав для удаления сообщений")
+        return
+
+    try:
+        # Запрашиваем подтверждение
+        confirm_text = "⚠️ <b>ВНИМАНИЕ!</b>\n\n"
+        confirm_text += "Вы собираетесь удалить ВСЕ сообщения в этом топике.\n"
+        confirm_text += "Это действие НЕОБРАТИМО!\n\n"
+        confirm_text += "Для подтверждения отправьте: <code>/confirm_clear_all</code>\n"
+        confirm_text += "Для отмены отправьте: <code>/cancel</code>"
+
+        # Сохраняем состояние подтверждения
+        user_data[user_id] = {
+            'waiting_confirm': 'clear_all',
+            'chat_id': message.chat.id
+        }
+
+        bot.send_message(message.chat.id, confirm_text, parse_mode='HTML')
+
+    except Exception as e:
+        logger.error(f"Ошибка в /clear_all: {e}")
+
+
+@bot.message_handler(commands=['confirm_clear_all'])
+def confirm_clear_all_command(message):
+    """Подтверждение удаления всех сообщений"""
+    # Проверяем, что команда в правильном топике
+    if not is_in_correct_topic(message):
+        return
+
+    user_id = message.from_user.id
+
+    # Проверяем права администратора и состояние подтверждения
+    if not is_admin(user_id) or user_id not in user_data or user_data[user_id].get('waiting_confirm') != 'clear_all':
+        return
+
+    try:
+        # Получаем сохраненные данные
+        chat_id = user_data[user_id].get('chat_id')
+
+        # Удаляем состояние подтверждения
+        del user_data[user_id]
+
+        logger.warning(f"Админ {user_id} начал удаление ВСЕХ сообщений в чате {chat_id}")
+
+        # Отправляем предупреждение
+        warning_msg = bot.send_message(chat_id, "⚠️ Начинаю удаление ВСЕХ сообщений... Это может занять время.")
+
+        # Простая реализация - удаляем 1000 сообщений
+        deleted_total = 0
+        max_messages = 1000
+
+        for msg_id in range(1, max_messages + 1):
+            try:
+                # Пропускаем сообщение с прогрессом
+                if msg_id == warning_msg.message_id:
+                    continue
+
+                bot.delete_message(chat_id, msg_id)
+                deleted_total += 1
+
+                # Задержка чтобы не превысить лимиты API
+                if deleted_total % 10 == 0:
+                    threading.Event().wait(0.1)
+
+            except Exception as e:
+                # Если не удалось удалить сообщение, продолжаем
+                continue
+
+        # Обновляем финальное сообщение
+        final_text = f"✅ Удалено {deleted_total} сообщений."
+        bot.edit_message_text(final_text, chat_id=chat_id, message_id=warning_msg.message_id)
+
+        # Удаляем финальное сообщение через 10 секунд
+        threading.Timer(10.0, lambda: bot.delete_message(chat_id, warning_msg.message_id)).start()
+
+    except Exception as e:
+        logger.error(f"Ошибка в /confirm_clear_all: {e}")
+
+
+@bot.message_handler(commands=['admin_help'])
+def admin_help_command(message):
+    """Показывает справку по командам администратора"""
+    user_id = message.from_user.id
+
+    help_text = "🛠️ <b>Команды администратора:</b>\n\n"
+
+    if is_admin(user_id):
+        help_text += "<b>Доступные команды:</b>\n"
+        help_text += "<code>/del_mes</code> - удалить сообщение (ответьте на него) - работает везде\n"
+        help_text += f"<code>/clear X</code> - удалить последние X сообщений (только в топике {TOPIC_ID})\n"
+        help_text += f"<code>/clear_all</code> - удалить все сообщения в топике (только в топике {TOPIC_ID})\n"
+        help_text += "<code>/add_exam</code> - добавить зачёт\n"
+        help_text += "<code>/delete_exam</code> - удалить зачёт\n\n"
+    else:
+        help_text += "❌ <b>У вас нет прав администратора</b>\n\n"
+
+    help_text += "<b>Общие команды:</b>\n"
+    help_text += "<code>/help</code> - общая справка по боту\n"
+    help_text += "<code>/admin_help</code> - эта справка\n"
+
+    bot.send_message(message.chat.id, help_text, parse_mode='HTML',
+                     reply_markup=create_back_to_menu_button())
+
+
+# Функции для работы с зачетами
+def add_exam_command_handler(message):
+    """Начинает процесс добавления зачета (только для админа)"""
+    user_id = message.from_user.id
+    if not is_admin(user_id):
+        bot.send_message(message.chat.id, "❌ У вас нет прав для добавления зачетов")
+        return
+
+    if user_id in user_data:
+        del user_data[user_id]
+
+    user_data[user_id] = {
+        'step': 'exam_subject_name',
+        'files': [],
+        'temp_files': [],
+        'added_by': f"{message.from_user.first_name or 'Аноним'}",
+        'chat_id': message.chat.id,
+        'topic_id': message.message_thread_id if hasattr(message, 'message_thread_id') else None
+    }
+
+    text = "📝 <b>Добавление зачета</b>\n\n1. Введите название предмета:\n<i>Пример: Математика, Физика</i>\n\n<i>Или отправьте /cancel для отмены</i>"
+
+    if message.chat.type in ['group', 'supergroup'] and TOPIC_ID is not None:
+        bot.send_message(message.chat.id, text, parse_mode='HTML',
+                         reply_markup=create_back_to_menu_button(), message_thread_id=TOPIC_ID)
+    else:
+        bot.send_message(message.chat.id, text, parse_mode='HTML',
+                         reply_markup=create_back_to_menu_button())
+
+
+@bot.message_handler(
+    func=lambda message: message.from_user.id in user_data and user_data.get(message.from_user.id, {}).get(
+        'step') == 'exam_subject_name')
+def process_exam_subject_name(message):
+    if not check_topic_access(message):
+        return
+
+    user_id = message.from_user.id
+    if not is_admin(user_id):
+        return
+
+    if message.text.lower() == '/cancel':
+        cancel_operation(message)
+        return
+
+    user_data[user_id]['subject_name'] = message.text
+    user_data[user_id]['step'] = 'exam_description'
+
+    text = "2. Введите описание зачета (что нужно подготовить):\n<i>Можно оставить пустым, отправив \"-\"</i>\n\n<i>Или отправьте /cancel для отмены</i>"
+
+    if message.chat.type in ['group', 'supergroup'] and TOPIC_ID is not None:
+        bot.send_message(message.chat.id, text, parse_mode='HTML', message_thread_id=TOPIC_ID)
+    else:
+        bot.send_message(message.chat.id, text, parse_mode='HTML')
+
+
+@bot.message_handler(
+    func=lambda message: message.from_user.id in user_data and user_data.get(message.from_user.id, {}).get(
+        'step') == 'exam_description')
+def process_exam_description(message):
+    if not check_topic_access(message):
+        return
+
+    user_id = message.from_user.id
+    if not is_admin(user_id):
+        return
+
+    if message.text.lower() == '/cancel':
+        cancel_operation(message)
+        return
+
+    user_data[user_id]['description'] = message.text if message.text != "-" else ""
+    user_data[user_id]['step'] = 'exam_date'
+
+    text = "3. Введите дату зачета:\n<i>Формат: ДД.ММ.ГГГГ</i>\n\n<i>Или отправьте /cancel для отмены</i>"
+
+    if message.chat.type in ['group', 'supergroup'] and TOPIC_ID is not None:
+        bot.send_message(message.chat.id, text, parse_mode='HTML', message_thread_id=TOPIC_ID)
+    else:
+        bot.send_message(message.chat.id, text, parse_mode='HTML')
+
+
+@bot.message_handler(
+    func=lambda message: message.from_user.id in user_data and user_data.get(message.from_user.id, {}).get(
+        'step') == 'exam_date')
+def process_exam_date(message):
+    if not check_topic_access(message):
+        return
+
+    user_id = message.from_user.id
+    if not is_admin(user_id):
+        return
+
+    if message.text.lower() == '/cancel':
+        cancel_operation(message)
+        return
+
+    date_input = message.text
+    try:
+        date_obj = datetime.strptime(date_input, '%d.%m.%Y')
+        user_data[user_id]['exam_date'] = date_obj.strftime('%Y-%m-%d')
+
+        # Сохраняем зачет
+        if save_exam_to_db(user_id):
+            response = "✅ <b>Зачет успешно добавлен!</b>\n"
+            response += f"📚 Предмет: {user_data[user_id]['subject_name']}\n"
+            response += f"📅 Дата: {date_input}\n"
+            if user_data[user_id]['description']:
+                response += f"📝 Описание: {user_data[user_id]['description']}\n"
+
+            if message.chat.type in ['group', 'supergroup'] and TOPIC_ID is not None:
+                bot.send_message(message.chat.id, response, parse_mode='HTML',
+                                 reply_markup=create_back_to_menu_button(), message_thread_id=TOPIC_ID)
+            else:
+                bot.send_message(message.chat.id, response, parse_mode='HTML',
+                                 reply_markup=create_back_to_menu_button())
+
+            # Очищаем данные пользователя
+            del user_data[user_id]
+        else:
+            send_error(message, "❌ Ошибка при сохранении зачета")
+
+    except ValueError:
+        send_error(message, "❌ Неверный формат даты! Используйте ДД.ММ.ГГГГ")
+
+
+def save_exam_to_db(user_id):
+    """Сохраняет зачет в базу данных"""
+    try:
+        conn = sqlite3.connect('homework.db')
+        cursor = conn.cursor()
+
+        cursor.execute('''
+                       INSERT INTO exams (subject_name, exam_date, description, added_by, chat_id, topic_id)
+                       VALUES (?, ?, ?, ?, ?, ?)
+                       ''', (
+                           user_data[user_id].get('subject_name', ''),
+                           user_data[user_id].get('exam_date', ''),
+                           user_data[user_id].get('description', ''),
+                           user_data[user_id].get('added_by', 'Аноним'),
+                           user_data[user_id].get('chat_id'),
+                           user_data[user_id].get('topic_id')
+                       ))
+
+        conn.commit()
+        exam_id = cursor.lastrowid
+        conn.close()
+
+        logger.info(f"Зачет сохранен в БД: ID={exam_id}, предмет={user_data[user_id].get('subject_name')}")
+        return True
+
+    except Exception as e:
+        logger.error(f"Ошибка сохранения зачета в БД: {e}")
+        return False
+
+
+def show_exam_dates_list(call):
+    """Показывает список дат с зачетами (доступно всем)"""
+    conn = sqlite3.connect('homework.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT DISTINCT exam_date FROM exams ORDER BY exam_date')
+    dates = cursor.fetchall()
+    conn.close()
+
+    if not dates:
+        bot.edit_message_text(
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            text="📭 Пока нет добавленных зачетов.",
+            reply_markup=create_back_to_menu_button()
+        )
+        return
+
+    markup = types.InlineKeyboardMarkup(row_width=2)
+
+    for date_tuple in dates:
+        date_str = date_tuple[0]
+        try:
+            date_obj = datetime.strptime(date_str, '%Y-%m-%d')
+            formatted_date = date_obj.strftime('%d.%m.%Y')
+
+            conn = sqlite3.connect('homework.db')
+            cursor = conn.cursor()
+            cursor.execute('SELECT COUNT(*) FROM exams WHERE exam_date = ?', (date_str,))
+            count = cursor.fetchone()[0]
+            conn.close()
+
+            markup.add(types.InlineKeyboardButton(
+                f"📅 {formatted_date} ({count})",
+                callback_data=f"view_exam_date_{date_str}"
+            ))
+        except Exception as e:
+            logger.error(f"Ошибка при форматировании даты экзамена: {e}")
+
+    markup.add(types.InlineKeyboardButton("🔙 Назад", callback_data="exams_menu"))
+    markup.add(types.InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu"))
+
+    bot.edit_message_text(
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        text="📅 <b>Выберите дату для просмотра зачетов:</b>",
+        parse_mode='HTML',
+        reply_markup=markup
+    )
+
+
+def show_exams_for_date(call, date_str, user_id):
+    """Показывает зачеты на указанную дату (все могут смотреть, но кнопки удаления только у админа)"""
+    try:
+        date_obj = datetime.strptime(date_str, '%Y-%m-%d')
+        formatted_date = date_obj.strftime('%d.%m.%Y')
+    except:
+        formatted_date = date_str
+
+    conn = sqlite3.connect('homework.db')
+    cursor = conn.cursor()
+    cursor.execute('''
+                   SELECT id, subject_name, description, added_by
+                   FROM exams
+                   WHERE exam_date = ?
+                   ORDER BY created_at
+                   ''', (date_str,))
+
+    exams = cursor.fetchall()
+    conn.close()
+
+    if not exams:
+        bot.edit_message_text(
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            text=f"📭 На {formatted_date} зачетов нет.",
+            reply_markup=create_back_to_menu_button()
+        )
+        return
+
+    response = f"📅 <b>Зачеты на {formatted_date}:</b>\n\n"
+    markup = types.InlineKeyboardMarkup(row_width=1)
+
+    for exam in exams:
+        exam_id, subject_name, description, added_by = exam
+        response += f"📚 <b>{subject_name}</b>\n"
+        response += f"👤 Добавил: {added_by}\n"
+        if description:
+            response += f"📝 {description}\n"
+        response += "━━━━━━━━━━━━━━\n"
+
+        # Кнопку удаления добавляем только для администратора
+        if is_admin(user_id):
+            markup.add(types.InlineKeyboardButton(
+                f"❌ Удалить {subject_name[:15]}...",
+                callback_data=f"delete_exam_{exam_id}"
+            ))
+
+    markup.add(types.InlineKeyboardButton("🔙 Назад к датам", callback_data="view_exams_menu"))
+    markup.add(types.InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu"))
+
+    bot.edit_message_text(
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        text=response,
+        parse_mode='HTML',
+        reply_markup=markup
+    )
+
+
+def show_exams_for_deletion(call):
+    """Показывает список зачетов для удаления (только для админа)"""
+    conn = sqlite3.connect('homework.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT id, subject_name, exam_date FROM exams ORDER BY exam_date')
+    exams = cursor.fetchall()
+    conn.close()
+
+    if not exams:
+        bot.edit_message_text(
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            text="📭 Нет зачетов для удаления.",
+            reply_markup=create_exams_menu(call.from_user.id)
+        )
+        return
+
+    response = "🗑️ <b>Выберите зачет для удаления:</b>\n\n"
+    markup = types.InlineKeyboardMarkup(row_width=1)
+
+    for exam in exams:
+        exam_id, subject_name, exam_date = exam
+        try:
+            date_obj = datetime.strptime(exam_date, '%Y-%m-%d')
+            formatted_date = date_obj.strftime('%d.%m.%Y')
+        except:
+            formatted_date = exam_date
+
+        response += f"📚 {subject_name} - {formatted_date}\n"
+        markup.add(types.InlineKeyboardButton(
+            f"❌ {subject_name[:15]}... ({formatted_date})",
+            callback_data=f"delete_exam_{exam_id}"
+        ))
+
+    markup.add(types.InlineKeyboardButton("🔙 Назад", callback_data="exams_menu"))
+    markup.add(types.InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu"))
+
+    bot.edit_message_text(
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        text=response,
+        parse_mode='HTML',
+        reply_markup=markup
+    )
+
+
+def delete_exam_callback(call, exam_id):
+    """Удаляет зачет (только для админа)"""
+    if not is_admin(call.from_user.id):
+        bot.answer_callback_query(call.id, "❌ У вас нет прав для удаления зачетов")
+        return
+
+    conn = sqlite3.connect('homework.db')
+    cursor = conn.cursor()
+
+    try:
+        # Получаем информацию о зачете перед удалением
+        cursor.execute('SELECT subject_name, exam_date FROM exams WHERE id = ?', (exam_id,))
+        exam_info = cursor.fetchone()
+
+        if exam_info:
+            subject_name, exam_date = exam_info
+
+            # Удаляем зачет
+            cursor.execute('DELETE FROM exams WHERE id = ?', (exam_id,))
+            conn.commit()
+
+            bot.answer_callback_query(call.id, f"✅ Зачет '{subject_name}' удален")
+            logger.info(f"Зачет удален: ID={exam_id}, предмет={subject_name}")
+
+            # Возвращаемся в меню зачетов
+            bot.edit_message_text(
+                chat_id=call.message.chat.id,
+                message_id=call.message.message_id,
+                text=f"✅ Зачет '{subject_name}' успешно удален!\n\n👇 Выберите действие:",
+                parse_mode='HTML',
+                reply_markup=create_exams_menu(call.from_user.id)
+            )
+        else:
+            bot.answer_callback_query(call.id, "❌ Зачет не найден")
+
+    except Exception as e:
+        logger.error(f"Ошибка при удалении зачета: {e}")
+        bot.answer_callback_query(call.id, "❌ Ошибка при удалении зачета")
+    finally:
+        conn.close()
+
+
+def show_upcoming_exams(call):
+    """Показывает ближайшие зачеты (в течение 7 дней, доступно всем)"""
+    today = datetime.now().date()
+    week_later = today + timedelta(days=7)
+
+    conn = sqlite3.connect('homework.db')
+    cursor = conn.cursor()
+    cursor.execute('''
+                   SELECT subject_name, exam_date, description
+                   FROM exams
+                   WHERE exam_date BETWEEN ? AND ?
+                   ORDER BY exam_date
+                   ''', (today.strftime('%Y-%m-%d'), week_later.strftime('%Y-%m-%d')))
+
+    upcoming_exams = cursor.fetchall()
+    conn.close()
+
+    if not upcoming_exams:
+        response = "📭 Ближайшие зачеты отсутствуют (в течение недели)."
+    else:
+        response = "🔔 <b>Ближайшие зачеты (7 дней):</b>\n\n"
+
+        for exam in upcoming_exams:
+            subject_name, exam_date, description = exam
+            date_obj = datetime.strptime(exam_date, '%Y-%m-%d')
+            days_left = (date_obj.date() - today).days
+
+            response += f"📚 <b>{subject_name}</b>\n"
+            response += f"📅 Дата: {date_obj.strftime('%d.%m.%Y')}\n"
+            response += f"⏰ Осталось дней: {days_left}\n"
+            if description:
+                response += f"📝 {description}\n"
+            response += "━━━━━━━━━━━━━━\n"
+
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("🔙 Назад", callback_data="exams_menu"))
+    markup.add(types.InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu"))
+
+    bot.edit_message_text(
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        text=response,
+        parse_mode='HTML',
+        reply_markup=markup
+    )
 
 
 @bot.message_handler(func=lambda message: True)
@@ -1466,7 +2571,23 @@ def handle_unknown(message):
 
 if __name__ == '__main__':
     init_db()
-    print("Бот запущен!")
-    console_thread = threading.Thread(target=console_input, daemon=True)
-    console_thread.start()
-    bot.polling(none_stop=True)
+    logger.info("Бот запущен!")
+    logger.info(f"Администраторы: {ADMIN_IDS}")
+    logger.info("Ожидание команд...")
+
+    # Запускаем планировщик уведомлений в отдельном потоке
+    notification_thread = threading.Thread(target=notification_scheduler, daemon=True)
+    notification_thread.start()
+    logger.info("Планировщик уведомлений запущен")
+
+    # Добавляем информацию о командах администратора в логи
+    logger.info("Команды администратора активированы:")
+    logger.info("/del_mes - удалить сообщение (ответьте на него) - работает везде")
+    logger.info(f"/clear X - удалить последние X сообщений (только в топике {TOPIC_ID})")
+    logger.info(f"/clear_all - удалить все сообщения в топике (только в топике {TOPIC_ID})")
+    logger.info("/admin_help - справка по командам администратора")
+
+    try:
+        bot.polling(none_stop=True, interval=0, timeout=20)
+    except Exception as e:
+        logger.error(f"Ошибка при запуске бота: {e}")
