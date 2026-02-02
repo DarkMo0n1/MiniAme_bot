@@ -171,9 +171,9 @@ def init_db():
         CREATE TABLE IF NOT EXISTS homework_files (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             homework_id INTEGER,
-            file_path TEXT NOT NULL,
+            file_name TEXT NOT NULL,  -- Только имя файла, без пути
             file_type TEXT NOT NULL,
-            file_name TEXT,
+            original_name TEXT,
             added_by TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (homework_id) REFERENCES homework(id) ON DELETE CASCADE
@@ -190,6 +190,18 @@ def init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
+
+    # Обновляем структуру таблицы homework_files
+    cursor.execute("PRAGMA table_info(homework_files)")
+    columns = [column[1] for column in cursor.fetchall()]
+    
+    # Переименовываем file_path в file_name если нужно
+    if 'file_path' in columns:
+        cursor.execute('ALTER TABLE homework_files RENAME COLUMN file_path TO file_name')
+    
+    # Добавляем original_name если нет
+    if 'original_name' not in columns:
+        cursor.execute('ALTER TABLE homework_files ADD COLUMN original_name TEXT')
 
     for table in ['homework', 'homework_files']:
         cursor.execute(f"PRAGMA table_info({table})")
@@ -227,9 +239,9 @@ def generate_unique_filename(original_name, file_type):
     return f"{timestamp}_{random_str}{ext}"
 
 
-def save_file_locally(file_content, file_name, file_type):
+def save_file_locally(file_content, original_name, file_type):
     try:
-        unique_filename = generate_unique_filename(file_name, file_type)
+        unique_filename = generate_unique_filename(original_name, file_type)
         file_path = os.path.join(FILES_DIR, unique_filename)
         
         # Проверяем и создаем директорию если нужно
@@ -239,7 +251,7 @@ def save_file_locally(file_content, file_name, file_type):
             f.write(file_content)
         
         logger.info(f"Файл сохранен: {file_path}")
-        return file_path
+        return unique_filename  # Возвращаем только имя файла, не полный путь
     except Exception as e:
         logger.error(f"Ошибка при сохранении файла: {e}")
         return None
@@ -387,8 +399,9 @@ def add_homework_command(message):
     user_id = message.from_user.id
     if user_id in user_data:
         if 'temp_files' in user_data[user_id]:
-            for file_path in user_data[user_id]['temp_files']:
+            for file_name in user_data[user_id]['temp_files']:
                 try:
+                    file_path = os.path.join(FILES_DIR, file_name)
                     if os.path.exists(file_path):
                         os.remove(file_path)
                 except:
@@ -398,7 +411,7 @@ def add_homework_command(message):
     user_data[user_id] = {
         'step': 'subject_name',
         'files': [],
-        'temp_files': [],
+        'temp_files': [],  # Теперь храним только имена файлов
         'added_by': f"{message.from_user.first_name or 'Аноним'}",
         'chat_id': message.chat.id,
         'topic_id': message.message_thread_id if hasattr(message, 'message_thread_id') else None
@@ -763,34 +776,34 @@ def handle_file(message):
 
             if content_type == 'photo':
                 file_info = bot.get_file(message.photo[-1].file_id)
-                file_name = f'{default_name}_{datetime.now().strftime("%H%M%S")}'
+                original_name = f'{default_name}_{datetime.now().strftime("%H%M%S")}'
             elif content_type == 'document':
                 file_info = bot.get_file(message.document.file_id)
-                file_name = message.document.file_name or f'{default_name}_{datetime.now().strftime("%H%M%S")}'
+                original_name = message.document.file_name or f'{default_name}_{datetime.now().strftime("%H%M%S")}'
             elif content_type == 'audio':
                 file_info = bot.get_file(message.audio.file_id)
-                file_name = message.audio.file_name or f'{default_name}_{datetime.now().strftime("%H%M%S")}'
+                original_name = message.audio.file_name or f'{default_name}_{datetime.now().strftime("%H%M%S")}'
             elif content_type == 'video':
                 file_info = bot.get_file(message.video.file_id)
-                file_name = message.video.file_name or f'{default_name}_{datetime.now().strftime("%H%M%S")}'
+                original_name = message.video.file_name or f'{default_name}_{datetime.now().strftime("%H%M%S")}'
             else:  # voice
                 file_info = bot.get_file(message.voice.file_id)
-                file_name = f'{default_name}_{datetime.now().strftime("%H%M%S")}'
+                original_name = f'{default_name}_{datetime.now().strftime("%H%M%S")}'
 
             try:
                 downloaded_file = bot.download_file(file_info.file_path)
-                file_path = save_file_locally(downloaded_file, file_name, file_type)
+                file_name = save_file_locally(downloaded_file, original_name, file_type)
 
-                if file_path:
+                if file_name:
                     user_data[user_id]['files'].append({
-                        'file_path': file_path,
+                        'file_name': file_name,
                         'file_type': file_type,
-                        'file_name': file_name
+                        'original_name': original_name
                     })
-                    user_data[user_id]['temp_files'].append(file_path)
+                    user_data[user_id]['temp_files'].append(file_name)
 
                     files_count = len(user_data[user_id]['files'])
-                    text = f"✅ Файл сохранен: {file_name}\n📁 Тип: {file_type}\n📊 Всего файлов: {files_count}\n\nОтправьте ещё файл или /done для завершения."
+                    text = f"✅ Файл сохранен: {original_name}\n📁 Тип: {file_type}\n📊 Всего файлов: {files_count}\n\nОтправьте ещё файл или /done для завершения."
 
                     if message.chat.type in ['group', 'supergroup'] and TOPIC_ID is not None:
                         bot.send_message(message.chat.id, text, message_thread_id=TOPIC_ID)
@@ -1032,7 +1045,7 @@ def show_homework_files(call, hw_id):
         return
 
     subject_name, homework_description, added_by = hw_info
-    cursor.execute('SELECT file_path, file_type, file_name, added_by FROM homework_files WHERE homework_id = ?', (hw_id,))
+    cursor.execute('SELECT file_name, file_type, original_name, added_by FROM homework_files WHERE homework_id = ?', (hw_id,))
     files = cursor.fetchall()
     conn.close()
 
@@ -1055,19 +1068,16 @@ def show_homework_files(call, hw_id):
     else:
         bot.send_message(chat_id, response, parse_mode='HTML', reply_markup=markup)
 
-    for i, (file_path, file_type, file_name, file_added_by) in enumerate(files, 1):
+    for i, (file_name, file_type, original_name, file_added_by) in enumerate(files, 1):
         try:
-            # ИСПРАВЛЕНИЕ: Проверяем и исправляем путь к файлу если нужно
-            if not os.path.isabs(file_path):
-                # Если путь относительный, конвертируем в абсолютный
-                file_path = os.path.join(FILES_DIR, os.path.basename(file_path))
+            # Формируем полный путь к файлу
+            file_path = os.path.join(FILES_DIR, file_name)
             
-            # Проверяем наличие файла по правильному пути
             if os.path.exists(file_path):
                 logger.info(f"Отправка файла: {file_path}")
                 with open(file_path, 'rb') as file:
                     file_data = file.read()
-                    caption = f"📄 Файл {i}: {file_name}"
+                    caption = f"📄 Файл {i}: {original_name or file_name}"
                     if file_added_by:
                         caption += f"\n👤 Добавил: {file_added_by}"
 
@@ -1080,10 +1090,10 @@ def show_homework_files(call, hw_id):
                         params = {'caption': caption}
                     elif file_type == 'документ':
                         send_func = bot.send_document
-                        params = {'caption': caption, 'visible_file_name': file_name}
+                        params = {'caption': caption, 'visible_file_name': original_name or file_name}
                     elif file_type == 'аудио':
                         send_func = bot.send_audio
-                        params = {'caption': caption, 'title': file_name}
+                        params = {'caption': caption, 'title': original_name or file_name}
                     elif file_type == 'видео':
                         send_func = bot.send_video
                         params = {'caption': caption}
@@ -1097,52 +1107,14 @@ def show_homework_files(call, hw_id):
                         else:
                             send_func(chat_id, file_data, **params)
                     else:
-                        send_error_file(chat_id, f"❌ Неподдерживаемый тип файла: {file_name}")
+                        send_error_file(chat_id, f"❌ Неподдерживаемый тип файла: {original_name}")
             else:
-                # Пробуем найти файл по имени в FILES_DIR
-                file_name_only = os.path.basename(file_path)
-                alt_path = os.path.join(FILES_DIR, file_name_only)
-                if os.path.exists(alt_path):
-                    logger.info(f"Файл найден по альтернативному пути: {alt_path}")
-                    with open(alt_path, 'rb') as file:
-                        file_data = file.read()
-                        caption = f"📄 Файл {i}: {file_name}"
-                        if file_added_by:
-                            caption += f"\n👤 Добавил: {file_added_by}"
-                        
-                        # Определяем функцию для отправки файла
-                        send_func = None
-                        params = {}
-                        
-                        if file_type == 'фото':
-                            send_func = bot.send_photo
-                            params = {'caption': caption}
-                        elif file_type == 'документ':
-                            send_func = bot.send_document
-                            params = {'caption': caption, 'visible_file_name': file_name}
-                        elif file_type == 'аудио':
-                            send_func = bot.send_audio
-                            params = {'caption': caption, 'title': file_name}
-                        elif file_type == 'видео':
-                            send_func = bot.send_video
-                            params = {'caption': caption}
-                        elif file_type == 'голосовое сообщение':
-                            send_func = bot.send_voice
-                            params = {'caption': caption}
-                        
-                        if send_func:
-                            if chat_id and TOPIC_ID is not None:
-                                send_func(chat_id, file_data, message_thread_id=TOPIC_ID, **params)
-                            else:
-                                send_func(chat_id, file_data, **params)
-                else:
-                    logger.error(f"Файл не найден: {file_path}")
-                    logger.error(f"Альтернативный путь также не найден: {alt_path}")
-                    send_error_file(chat_id, f"❌ Файл не найден: {file_name}")
+                logger.error(f"Файл не найден: {file_path}")
+                send_error_file(chat_id, f"❌ Файл не найден: {original_name}")
 
         except Exception as e:
             logger.error(f"Ошибка при отправке файла {i}: {e}")
-            send_error_file(chat_id, f"❌ Не удалось отправить файл {i}: {file_name}")
+            send_error_file(chat_id, f"❌ Не удалось отправить файл {i}: {original_name}")
 
 
 def send_error_file(chat_id, text):
@@ -1170,15 +1142,12 @@ def delete_homework_callback(call):
             return
 
         subject_name, date_str = hw_info
-        cursor.execute('SELECT file_path FROM homework_files WHERE homework_id = ?', (hw_id,))
+        cursor.execute('SELECT file_name FROM homework_files WHERE homework_id = ?', (hw_id,))
         files_to_delete = cursor.fetchall()
 
-        for (file_path,) in files_to_delete:
+        for (file_name,) in files_to_delete:
             try:
-                # Исправляем путь к файлу если нужно
-                if not os.path.isabs(file_path):
-                    file_path = os.path.join(FILES_DIR, os.path.basename(file_path))
-                    
+                file_path = os.path.join(FILES_DIR, file_name)
                 if os.path.exists(file_path):
                     os.remove(file_path)
                     logger.info(f"Файл удален: {file_path}")
@@ -1421,13 +1390,13 @@ def save_homework_to_db(user_id):
 
         for file_data in user_data[user_id].get('files', []):
             cursor.execute('''
-                INSERT INTO homework_files (homework_id, file_path, file_type, file_name, added_by)
+                INSERT INTO homework_files (homework_id, file_name, file_type, original_name, added_by)
                 VALUES (?, ?, ?, ?, ?)
             ''', (
                 homework_id,
-                file_data.get('file_path'),
+                file_data.get('file_name'),
                 file_data['file_type'],
-                file_data['file_name'],
+                file_data.get('original_name', ''),
                 user_data[user_id].get('added_by', 'Аноним')
             ))
 
@@ -1445,12 +1414,14 @@ def save_homework_to_db(user_id):
                 conn.rollback()
             except:
                 pass
-        for file_path in user_data[user_id].get('temp_files', []):
+        for file_name in user_data[user_id].get('temp_files', []):
             try:
+                file_path = os.path.join(FILES_DIR, file_name)
                 if os.path.exists(file_path):
                     os.remove(file_path)
             except:
                 pass
+        logger.error(f"Ошибка при сохранении задания: {e}")
         return -1
     finally:
         if conn:
@@ -1464,8 +1435,9 @@ def cancel_operation(message):
     user_id = message.from_user.id
     if user_id in user_data:
         if 'temp_files' in user_data[user_id]:
-            for file_path in user_data[user_id]['temp_files']:
+            for file_name in user_data[user_id]['temp_files']:
                 try:
+                    file_path = os.path.join(FILES_DIR, file_name)
                     if os.path.exists(file_path):
                         os.remove(file_path)
                 except Exception as e:
