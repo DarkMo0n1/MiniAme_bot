@@ -1386,19 +1386,28 @@ def show_homework_for_date_callback(call, date_str):
             response += f"   📝 {homework_description}\n"
         response += f"   📎 Файлов: {file_count}\n\n"
 
-    markup = types.InlineKeyboardMarkup(row_width=1)
+    markup = types.InlineKeyboardMarkup(row_width=2)  # Изменено с 1 на 2
+    
     for hw in homework_list:
         hw_id, subject_name, _, _, file_count = hw
         short_name = subject_name[:15] + "..." if len(subject_name) > 15 else subject_name
-
+        
         row_buttons = []
+        
+        # Всегда добавляем кнопку просмотра файлов, если файлы есть
         if file_count > 0:
             row_buttons.append(types.InlineKeyboardButton(f"📁 {short_name}", callback_data=f"view_files_{hw_id}"))
+        else:
+            # Если файлов нет, добавляем заглушку с тем же текстом
+            row_buttons.append(types.InlineKeyboardButton(f"📄 {short_name}", callback_data=f"view_files_{hw_id}"))
         
         # Проверяем, является ли пользователь администратором для отображения кнопки удаления
         if is_admin(user_id):
             row_buttons.append(types.InlineKeyboardButton(f"❌ {short_name}", callback_data=f"delete_{hw_id}"))
-        markup.row(*row_buttons)
+        
+        # Добавляем все кнопки для этого задания в один ряд
+        if row_buttons:
+            markup.row(*row_buttons)
 
     markup.row(types.InlineKeyboardButton("🔙 К списку дат", callback_data="back_to_dates"))
     markup.row(types.InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu"))
@@ -1431,15 +1440,14 @@ def show_homework_files(call, hw_id):
     files = cursor.fetchall()
     conn.close()
 
-    if not files:
-        bot.answer_callback_query(call.id, "❌ У этого задания нет файлов")
-        return
-
-    bot.answer_callback_query(call.id)
     response = f"📁 <b>Файлы к заданию:</b> {subject_name}\n<b>👤 Добавил:</b> {added_by}\n"
     if homework_description:
         response += f"<b>Описание:</b> {homework_description}\n"
-    response += f"\n<b>Всего файлов:</b> {len(files)}\n\n"
+    
+    if files:
+        response += f"\n<b>Всего файлов:</b> {len(files)}\n\n"
+    else:
+        response += f"\n📭 У этого задания нет прикрепленных файлов\n\n"
 
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton("🔙 Назад к заданиям", callback_data="back_to_dates"))
