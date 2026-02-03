@@ -2095,7 +2095,7 @@ def confirm_clear_all_command(message):
 def call_all_members_command(message):
     """Упоминает всех участников чата в одном сообщении (только для администратора)"""
     log_action(message.from_user, "Команда /call_all", "Начало выполнения")
-    
+
     # Проверяем, что команда используется в групповом чате
     if message.chat.type not in ['group', 'supergroup']:
         bot.send_message(message.chat.id, "❌ Эта команда работает только в групповых чатах")
@@ -2111,71 +2111,99 @@ def call_all_members_command(message):
         return
 
     try:
+        # Получаем текст из команды (в кавычках)
+        text = ""
+        if len(message.text.split(' ', 1)) > 1:
+            # Извлекаем текст после команды
+            args = message.text.split(' ', 1)[1]
+            # Удаляем кавычки если есть
+            text = args.strip('"\'')
+
+        if not text:
+            text = "🔔 Внимание всем участникам чата!"
+
         # Получаем информацию о чате
         chat_id = message.chat.id
-        
-        # Определяем thread_id для ответа
-        thread_id = None
-        if hasattr(message, 'message_thread_id'):
-            thread_id = message.message_thread_id
-        
-        # Пытаемся получить количество участников
+
+        # Отправляем сообщение в топик 2
         try:
-            chat_member_count = bot.get_chat_member_count(chat_id)
-        except:
-            chat_member_count = 0
-        
-        log_action(message.from_user, "Упоминание всех участников", f"Чат: {chat_id}, Участников: {chat_member_count}")
-        
-        # Создаем скрытое упоминание всех участников
-        # Используем невидимый символ Zero Width Space (U+200B) и упоминание @all
-        # Это создаст уведомление для всех, но сообщение будет выглядеть коротким
-        mention_text = "​👥"  # Содержит невидимый символ для скрытого упоминания
-        
-        # Добавляем текст для привлечения внимания
-        notification_text = "🔔 <b>Внимание всем участникам чата!</b>"
-        
-        # Комбинируем текст
-        full_text = f"{mention_text}\n\n{notification_text}"
-        
-        # Отправляем сообщение
-        try:
-            if thread_id:
-                mention_message = bot.send_message(chat_id, full_text, parse_mode='HTML', 
-                                                  message_thread_id=thread_id)
-            else:
-                mention_message = bot.send_message(chat_id, full_text, parse_mode='HTML')
-            
-            # Удаляем команду /call_all
+            # Пробуем отправить с упоминанием всех через @all
+            # Сначала отправляем пустое сообщение, которое заставит телеграм упомянуть всех
+            mention_message = bot.send_message(chat_id,
+                                               "​@all",  # Невидимый символ + @all
+                                               parse_mode='HTML',
+                                               message_thread_id=2)
+
+            # Затем отправляем основное сообщение
+            main_message = bot.send_message(chat_id,
+                                            f"{text}\n\n<i>Сообщение будет удалено через минуту</i>",
+                                            parse_mode='HTML',
+                                            message_thread_id=2)
+
+            log_action(message.from_user, "Упоминание отправлено", f"Текст: {text}")
+
+            # Удаляем команду
             try:
                 bot.delete_message(chat_id, message.message_id)
-            except Exception as e:
-                logger.warning(f"Не удалось удалить сообщение с командой /call_all: {e}")
-            
-            # Удаляем упоминание через 5 секунд (чтобы оно было кратковременным)
-            threading.Timer(5.0, lambda: delete_call_message(chat_id, mention_message.message_id, thread_id)).start()
-            
-            log_action(message.from_user, "Упоминание отправлено", "Сообщение будет удалено через 5 секунд")
-            
+            except:
+                pass
+
+            # Удаляем первое сообщение с упоминанием через 2 секунды
+            threading.Timer(2.0, lambda: delete_specific_message(chat_id, mention_message.message_id, 2)).start()
+
+            # Удаляем основное сообщение через минуту
+            threading.Timer(60.0, lambda: delete_specific_message(chat_id, main_message.message_id, 2)).start()
+
+            # Отправляем подтверждение в исходный топик
+            if hasattr(message, 'message_thread_id') and message.message_thread_id:
+                bot.send_message(chat_id,
+                                 "✅ Упоминание отправлено в топик 2",
+                                 message_thread_id=message.message_thread_id)
+
         except Exception as e:
             logger.error(f"Ошибка отправки упоминания: {e}")
-            bot.send_message(message.chat.id, "❌ Не удалось отправить упоминание")
-            
+
+            # Если не удалось отправить в топик 2, пробуем отправить в общий чат
+            try:
+                mention_message = bot.send_message(chat_id,
+                                                   "​@all",
+                                                   parse_mode='HTML')
+
+                main_message = bot.send_message(chat_id,
+                                                f"{text}\n\n<i>Сообщение будет удалено через минуту</i>",
+                                                parse_mode='HTML')
+
+                # Удаляем команду
+                try:
+                    bot.delete_message(chat_id, message.message_id)
+                except:
+                    pass
+
+                threading.Timer(2.0, lambda: delete_specific_message(chat_id, mention_message.message_id)).start()
+                threading.Timer(60.0, lambda: delete_specific_message(chat_id, main_message.message_id)).start()
+
+            except Exception as e2:
+                logger.error(f"Ошибка при альтернативной отправке: {e2}")
+                bot.send_message(chat_id, f"❌ Ошибка при отправке упоминания: {str(e2)}")
+
     except Exception as e:
         logger.error(f"Ошибка в /call_all: {e}")
-        bot.send_message(message.chat.id, f"❌ Ошибка при выполнении команды: {str(e)}")
+        try:
+            bot.send_message(message.chat.id, f"❌ Ошибка при выполнении команды: {str(e)}")
+        except:
+            pass
 
 
-def delete_call_message(chat_id, message_id, thread_id=None):
-    """Удаляет сообщение с упоминанием всех участников"""
+def delete_specific_message(chat_id, message_id, thread_id=None):
+    """Удаляет конкретное сообщение"""
     try:
         if thread_id:
             bot.delete_message(chat_id, message_id)
         else:
             bot.delete_message(chat_id, message_id)
-        logger.info(f"Сообщение с упоминанием удалено: chat_id={chat_id}, message_id={message_id}")
+        logger.info(f"Сообщение удалено: chat_id={chat_id}, message_id={message_id}")
     except Exception as e:
-        logger.error(f"Ошибка при удалении сообщения с упоминанием: {e}")
+        logger.error(f"Ошибка при удалении сообщения: {e}")
 
 
 @bot.message_handler(commands=['admin_help'])
