@@ -1423,7 +1423,13 @@ def show_homework_for_date_callback(call, date_str):
 
 def show_homework_files(call, hw_id):
     chat_id = call.message.chat.id
-
+    message_id = call.message.message_id
+    
+    # Определяем thread_id для групповых чатов с топиками
+    thread_id = None
+    if call.message.chat.type in ['group', 'supergroup'] and hasattr(call.message, 'message_thread_id'):
+        thread_id = call.message.message_thread_id
+    
     conn = sqlite3.connect('homework.db')
     cursor = conn.cursor()
 
@@ -1435,29 +1441,118 @@ def show_homework_files(call, hw_id):
         return
 
     subject_name, homework_description, added_by = hw_info
-    cursor.execute('SELECT file_name, file_type, original_name, added_by FROM homework_files WHERE homework_id = ?',
-                   (hw_id,))
+    cursor.execute('SELECT file_name, file_type, original_name FROM homework_files WHERE homework_id = ?', (hw_id,))
     files = cursor.fetchall()
     conn.close()
 
+    if not files:
+        # Если файлов нет, просто показываем информацию
+        response = f"📁 <b>Файлы к заданию:</b> {subject_name}\n<b>👤 Добавил:</b> {added_by}\n"
+        if homework_description:
+            response += f"<b>Описание:</b> {homework_description}\n"
+        response += f"\n📭 У этого задания нет прикрепленных файлов\n\n"
+        
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton("🔙 Назад к заданиям", callback_data="back_to_dates"))
+        markup.add(types.InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu"))
+        
+        bot.answer_callback_query(call.id)
+        bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=message_id,
+            text=response,
+            parse_mode='HTML',
+            reply_markup=markup
+        )
+        return
+
+    # Если файлы есть, отправляем информацию о них
     response = f"📁 <b>Файлы к заданию:</b> {subject_name}\n<b>👤 Добавил:</b> {added_by}\n"
     if homework_description:
         response += f"<b>Описание:</b> {homework_description}\n"
+    response += f"\n<b>Отправляю {len(files)} файл(ов)...</b>\n\n"
     
-    if files:
-        response += f"\n<b>Всего файлов:</b> {len(files)}\n\n"
-    else:
-        response += f"\n📭 У этого задания нет прикрепленных файлов\n\n"
+    bot.answer_callback_query(call.id, f"📁 Отправляю {len(files)} файл(ов)...")
+    
+    # Сначала обновляем текущее сообщение с информацией
+    bot.edit_message_text(
+        chat_id=chat_id,
+        message_id=message_id,
+        text=response,
+        parse_mode='HTML'
+    )
 
+    # Затем отправляем каждый файл
+    for file_info in files:
+        file_name, file_type, original_name = file_info
+        file_path = os.path.join(FILES_DIR, file_name)
+        
+        if not os.path.exists(file_path):
+            logger.error(f"Файл не найден: {file_path}")
+            continue
+        
+        try:
+            with open(file_path, 'rb') as file:
+                if file_type == 'фото':
+                    if thread_id:
+                        bot.send_photo(chat_id, file, caption=original_name or subject_name, 
+                                       message_thread_id=thread_id)
+                    else:
+                        bot.send_photo(chat_id, file, caption=original_name or subject_name)
+                elif file_type == 'документ':
+                    if thread_id:
+                        bot.send_document(chat_id, file, caption=original_name or subject_name,
+                                          message_thread_id=thread_id)
+                    else:
+                        bot.send_document(chat_id, file, caption=original_name or subject_name)
+                elif file_type == 'аудио':
+                    if thread_id:
+                        bot.send_audio(chat_id, file, caption=original_name or subject_name,
+                                       message_thread_id=thread_id)
+                    else:
+                        bot.send_audio(chat_id, file, caption=original_name or subject_name)
+                elif file_type == 'видео':
+                    if thread_id:
+                        bot.send_video(chat_id, file, caption=original_name or subject_name,
+                                       message_thread_id=thread_id)
+                    else:
+                        bot.send_video(chat_id, file, caption=original_name or subject_name)
+                elif file_type == 'голосовое сообщение':
+                    if thread_id:
+                        bot.send_voice(chat_id, file, caption=original_name or subject_name,
+                                       message_thread_id=thread_id)
+                    else:
+                        bot.send_voice(chat_id, file, caption=original_name or subject_name)
+                else:
+                    # По умолчанию отправляем как документ
+                    if thread_id:
+                        bot.send_document(chat_id, file, caption=original_name or subject_name,
+                                          message_thread_id=thread_id)
+                    else:
+                        bot.send_document(chat_id, file, caption=original_name or subject_name)
+                
+                logger.info(f"Файл отправлен: {file_name}")
+                
+        except Exception as e:
+            logger.error(f"Ошибка при отправке файла {file_name}: {e}")
+            error_msg = f"❌ Не удалось отправить файл: {original_name or file_name}"
+            if thread_id:
+                bot.send_message(chat_id, error_msg, message_thread_id=thread_id)
+            else:
+                bot.send_message(chat_id, error_msg)
+
+    # После отправки всех файлов добавляем кнопки для навигации
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton("🔙 Назад к заданиям", callback_data="back_to_dates"))
     markup.add(types.InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu"))
-
-    if chat_id and TOPIC_ID is not None:
-        bot.send_message(chat_id, response, parse_mode='HTML', reply_markup=markup, message_thread_id=TOPIC_ID)
+    
+    # Отправляем сообщение с кнопками после файлов
+    final_msg = f"✅ Все файлы отправлены!\n\n📚 <b>Задание:</b> {subject_name}\n👤 <b>Добавил:</b> {added_by}\n📁 <b>Файлов:</b> {len(files)}"
+    if thread_id:
+        bot.send_message(chat_id, final_msg, parse_mode='HTML', 
+                        reply_markup=markup, message_thread_id=thread_id)
     else:
-        bot.send_message(chat_id, response, parse_mode='HTML', reply_markup=markup)
-
+        bot.send_message(chat_id, final_msg, parse_mode='HTML', reply_markup=markup)
 
 def delete_homework_callback(call):
     user_id = call.from_user.id
