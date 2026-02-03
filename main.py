@@ -48,6 +48,23 @@ def is_admin(user_id):
     return user_id in ADMIN_IDS
 
 
+def get_user_info(user):
+    """Возвращает информацию о пользователе для логов"""
+    user_id = user.id
+    username = user.username or "без username"
+    first_name = user.first_name or "без имени"
+    return f"{user_id} ({username}, {first_name})"
+
+
+def log_action(user, action, details=""):
+    """Логирует действия пользователя"""
+    user_info = get_user_info(user)
+    log_message = f"ДЕЙСТВИЕ: {action} - Пользователь: {user_info}"
+    if details:
+        log_message += f" - Детали: {details}"
+    logger.info(log_message)
+
+
 def check_topic_access(message):
     """Проверяет доступ к топику - разрешает команды в личных сообщениях и в нужном топике"""
     # Если топик не задан, разрешаем все
@@ -64,7 +81,7 @@ def check_topic_access(message):
         if hasattr(message, 'message_thread_id'):
             return message.message_thread_id == TOPIC_ID
         # Если сообщение не в топике, но это команда, которую нужно разрешить везде
-        # (например, /del_mes, /clear, /clear_all)
+        # (например, /del_mes, /clear_all, /call_all)
         return True
 
     return False
@@ -598,8 +615,8 @@ def notification_scheduler():
 def send_welcome(message):
     global CONSOLE_CHAT_ID
     CONSOLE_CHAT_ID = message.chat.id
-    logger.info(
-        f"Пользователь {message.from_user.id} ({message.from_user.username}) запустил бота в чате {CONSOLE_CHAT_ID}")
+    user_info = get_user_info(message.from_user)
+    logger.info(f"Пользователь {user_info} запустил бота в чате {CONSOLE_CHAT_ID}")
 
     # Для /start разрешаем всегда
     help_text = "👋 Привет! Я бот для управления домашними заданиями и зачетами.\n\n👇 <b>Выберите действие:</b>"
@@ -645,7 +662,8 @@ def help_command(message):
     if is_admin(user_id):
         help_text += "\n\n🛠️ <b>Команды администратора:</b>\n"
         help_text += "<code>/del_mes</code> - удалить сообщение (ответьте на него)\n"
-        help_text += f"<code>/clear X</code> - удалить последние X сообщений (только в топике {TOPIC_ID})\n"
+        help_text += f"<code>/clear_all</code> - удалить все сообщения в топике {TOPIC_ID}\n"
+        help_text += "<code>/call_all</code> - упомянуть всех участников чата\n"
 
     help_text += """
 💡 <b>Особенности:</b>
@@ -653,7 +671,7 @@ def help_command(message):
 • Можно прикреплять несколько файлов
 • Для завершения добавления файлов отправьте <code>/done</code>
 • Для пропуска отправьте <code>/skip</code>
-• Задания может удалить любой пользователь
+• Задания может удалить только администратор
     """
 
     bot.send_message(message.chat.id, help_text, parse_mode='HTML',
@@ -686,6 +704,8 @@ def add_homework_command(message):
         'topic_id': message.message_thread_id if hasattr(message, 'message_thread_id') else None
     }
 
+    log_action(message.from_user, "Начало добавления домашнего задания")
+
     text = "📝 <b>Добавление домашнего задания</b>\n\n1. Введите название предмета:\n<i>Пример: Математика, Физика</i>\n\n<i>Или отправьте /cancel для отмены</i>"
 
     if message.chat.type in ['group', 'supergroup'] and TOPIC_ID is not None:
@@ -711,6 +731,8 @@ def process_subject_name(message):
     user_data[user_id]['subject_name'] = message.text
     user_data[user_id]['step'] = 'homework_description'
 
+    log_action(message.from_user, "Ввод названия предмета", f"Предмет: {message.text}")
+
     text = "2. Введите описание домашнего задания:\n<i>Можно оставить пустым, отправив \"-\"</i>\n\n<i>Или отправьте /cancel для отмены</i>"
 
     if message.chat.type in ['group', 'supergroup'] and TOPIC_ID is not None:
@@ -733,6 +755,8 @@ def process_homework_description(message):
 
     user_data[user_id]['homework_description'] = message.text if message.text != "-" else ""
     user_data[user_id]['step'] = 'date'
+
+    log_action(message.from_user, "Ввод описания задания")
 
     text = "3. Введите дату сдачи задания:\n<i>Формат: ДД.ММ.ГГГГ или сегодня/завтра/послезавтра</i>\n\n<i>Или отправьте /cancel для отмены</i>"
 
@@ -768,6 +792,8 @@ def process_date(message):
         user_data[user_id]['date'] = date_obj.strftime('%Y-%m-%d')
         user_data[user_id]['step'] = 'file_choice'
 
+        log_action(message.from_user, "Ввод даты сдачи", f"Дата: {date_input}")
+
         homework_summary = get_homework_summary(user_id)
         markup = types.InlineKeyboardMarkup(row_width=2)
         markup.add(
@@ -797,7 +823,7 @@ def handle_all_callbacks(call):
     user_id = call.from_user.id
     chat_id = call.message.chat.id
 
-    logger.info(f"Обработка callback от пользователя {user_id}: {call.data}")
+    logger.info(f"Обработка callback от пользователя {get_user_info(call.from_user)}: {call.data}")
 
     if TOPIC_ID is not None and chat_id == call.message.chat.id:
         if call.message.chat.type in ['group', 'supergroup']:
@@ -913,6 +939,8 @@ def handle_all_callbacks(call):
             'topic_id': TOPIC_ID if TOPIC_ID is not None else None
         }
 
+        log_action(call.from_user, "Начало добавления ДЗ через меню")
+
     elif call.data == 'view_homework_menu':
         bot.answer_callback_query(call.id)
         show_dates_list(call)
@@ -969,6 +997,8 @@ def handle_add_callback(call):
         user_data[user_id]['step'] = 'waiting_file'
         text = "4. Отправьте файл (документ, фото, аудио, видео):\n<i>Можно отправить несколько файлов</i>\n<i>Для завершения отправьте /done</i>\n<i>Или отправьте /skip чтобы продолжить без файлов</i>"
 
+        log_action(call.from_user, "Запрос файла для ДЗ")
+
         if chat_id and TOPIC_ID is not None:
             bot.send_message(chat_id, text, parse_mode='HTML', message_thread_id=TOPIC_ID)
         else:
@@ -977,7 +1007,12 @@ def handle_add_callback(call):
     elif call.data == 'save_without_file':
         bot.answer_callback_query(call.id)
         files_count = save_homework_to_db(user_id)
-        text = "✅ <b>Домашнее задание успешно сохранено без файла!</b>" if files_count >= 0 else "❌ <b>Ошибка при сохранении задания!</b>"
+        if files_count >= 0:
+            log_action(call.from_user, "Сохранение ДЗ без файла", "Успешно")
+            text = "✅ <b>Домашнее задание успешно сохранено без файла!</b>"
+        else:
+            log_action(call.from_user, "Сохранение ДЗ без файла", "Ошибка")
+            text = "❌ <b>Ошибка при сохранении задания!</b>"
         bot.edit_message_text(
             chat_id=chat_id,
             message_id=message_id,
@@ -990,6 +1025,7 @@ def handle_add_callback(call):
 
     elif call.data == 'cancel_add':
         bot.answer_callback_query(call.id)
+        log_action(call.from_user, "Отмена добавления ДЗ")
         if user_id in user_data:
             del user_data[user_id]
         bot.edit_message_text(
@@ -1070,7 +1106,7 @@ def show_help_menu(call):
 • Можно прикреплять несколько файлов
 • Для завершения добавления файлов отправьте <code>/done</code>
 • Для пропуска отправьте <code>/skip</code>
-• Задания может удалить любой пользователь
+• Задания может удалить только администратор
     """
 
     bot.edit_message_text(
@@ -1132,6 +1168,8 @@ def handle_file(message):
                     files_count = len(user_data[user_id]['files'])
                     text = f"✅ Файл сохранен: {original_name}\n📁 Тип: {file_type}\n📊 Всего файлов: {files_count}\n\nОтправьте ещё файл или /done для завершения."
 
+                    log_action(message.from_user, "Добавление файла к ДЗ", f"Тип: {file_type}, Имя: {original_name}")
+
                     if message.chat.type in ['group', 'supergroup'] and TOPIC_ID is not None:
                         bot.send_message(message.chat.id, text, message_thread_id=TOPIC_ID)
                     else:
@@ -1165,10 +1203,13 @@ def finish_adding_files(message):
 
             if files_count > 0:
                 response = f"✅ <b>Домашнее задание успешно сохранено!</b>\nПрикреплено файлов: {files_count}"
+                log_action(message.from_user, "Завершение добавления ДЗ с файлами", f"Файлов: {files_count}")
             elif files_count == 0:
                 response = "✅ <b>Домашнее задание успешно сохранено без файлов!</b>"
+                log_action(message.from_user, "Завершение добавления ДЗ без файлов", "Успешно")
             else:
                 response = "❌ <b>Ошибка при сохранении задания!</b>"
+                log_action(message.from_user, "Завершение добавления ДЗ", "Ошибка сохранения")
 
             if message.chat.type in ['group', 'supergroup'] and TOPIC_ID is not None:
                 bot.send_message(message.chat.id, response + "\n\n🏠 Вы можете вернуться в главное меню:",
@@ -1194,6 +1235,8 @@ def skip_adding_files(message):
         if all(key in user_data[user_id] for key in ['subject_name', 'homework_description', 'date']):
             save_homework_to_db(user_id)
             text = "✅ <b>Домашнее задание успешно сохранено без файлов!</b>\n\n🏠 Вы можете вернуться в главное меню:"
+            
+            log_action(message.from_user, "Пропуск добавления файлов к ДЗ", "Сохранено без файлов")
 
             if message.chat.type in ['group', 'supergroup'] and TOPIC_ID is not None:
                 bot.send_message(message.chat.id, text, parse_mode='HTML',
@@ -1212,6 +1255,8 @@ def skip_adding_files(message):
 def view_all_homework(message):
     if not check_topic_access(message):
         return
+
+    log_action(message.from_user, "Просмотр всех заданий")
 
     if message.chat.type in ['group', 'supergroup'] and TOPIC_ID is not None:
         bot.send_message(message.chat.id, "📚 <b>Домашние задания</b>\n\n👇 Выберите действие:",
@@ -1289,6 +1334,7 @@ def show_dates_list(call):
 def show_homework_for_date_callback(call, date_str):
     chat_id = call.message.chat.id
     message_id = call.message.message_id
+    user_id = call.from_user.id
 
     conn = sqlite3.connect('homework.db')
     cursor = conn.cursor()
@@ -1348,7 +1394,10 @@ def show_homework_for_date_callback(call, date_str):
         row_buttons = []
         if file_count > 0:
             row_buttons.append(types.InlineKeyboardButton(f"📁 {short_name}", callback_data=f"view_files_{hw_id}"))
-        row_buttons.append(types.InlineKeyboardButton(f"❌ {short_name}", callback_data=f"delete_{hw_id}"))
+        
+        # Проверяем, является ли пользователь администратором для отображения кнопки удаления
+        if is_admin(user_id):
+            row_buttons.append(types.InlineKeyboardButton(f"❌ {short_name}", callback_data=f"delete_{hw_id}"))
         markup.row(*row_buttons)
 
     markup.row(types.InlineKeyboardButton("🔙 К списку дат", callback_data="back_to_dates"))
@@ -1401,66 +1450,18 @@ def show_homework_files(call, hw_id):
     else:
         bot.send_message(chat_id, response, parse_mode='HTML', reply_markup=markup)
 
-    for i, (file_name, file_type, original_name, file_added_by) in enumerate(files, 1):
-        try:
-            # Формируем полный путь к файлу
-            file_path = os.path.join(FILES_DIR, file_name)
-
-            if os.path.exists(file_path):
-                logger.info(f"Отправка файла: {file_path}")
-                with open(file_path, 'rb') as file:
-                    file_data = file.read()
-                    caption = f"📄 Файл {i}: {original_name or file_name}"
-                    if file_added_by:
-                        caption += f"\n👤 Добавил: {file_added_by}"
-
-                    # Определяем функцию для отправки файла
-                    send_func = None
-                    params = {}
-
-                    if file_type == 'фото':
-                        send_func = bot.send_photo
-                        params = {'caption': caption}
-                    elif file_type == 'документ':
-                        send_func = bot.send_document
-                        params = {'caption': caption, 'visible_file_name': original_name or file_name}
-                    elif file_type == 'аудио':
-                        send_func = bot.send_audio
-                        params = {'caption': caption, 'title': original_name or file_name}
-                    elif file_type == 'видео':
-                        send_func = bot.send_video
-                        params = {'caption': caption}
-                    elif file_type == 'голосовое сообщение':
-                        send_func = bot.send_voice
-                        params = {'caption': caption}
-
-                    if send_func:
-                        if chat_id and TOPIC_ID is not None:
-                            send_func(chat_id, file_data, message_thread_id=TOPIC_ID, **params)
-                        else:
-                            send_func(chat_id, file_data, **params)
-                    else:
-                        send_error_file(chat_id, f"❌ Неподдерживаемый тип файла: {original_name}")
-            else:
-                logger.error(f"Файл не найден: {file_path}")
-                send_error_file(chat_id, f"❌ Файл не найден: {original_name}")
-
-        except Exception as e:
-            logger.error(f"Ошибка при отправке файла {i}: {e}")
-            send_error_file(chat_id, f"❌ Не удалось отправить файл {i}: {original_name}")
-
-
-def send_error_file(chat_id, text):
-    if chat_id and TOPIC_ID is not None:
-        bot.send_message(chat_id, text, message_thread_id=TOPIC_ID)
-    else:
-        bot.send_message(chat_id, text)
-
 
 def delete_homework_callback(call):
+    user_id = call.from_user.id
     hw_id = int(call.data.replace('delete_', ''))
     chat_id = call.message.chat.id
     message_id = call.message.message_id
+
+    # Проверяем, является ли пользователь администратором
+    if not is_admin(user_id):
+        bot.answer_callback_query(call.id, "❌ У вас нет прав для удаления заданий")
+        log_action(call.from_user, "Попытка удаления задания без прав", f"ID задания: {hw_id}")
+        return
 
     conn = sqlite3.connect('homework.db')
     cursor = conn.cursor()
@@ -1471,6 +1472,7 @@ def delete_homework_callback(call):
 
         if not hw_info:
             bot.answer_callback_query(call.id, "❌ Задание не найдено")
+            log_action(call.from_user, "Попытка удаления несуществующего задания", f"ID: {hw_id}")
             conn.close()
             return
 
@@ -1493,6 +1495,7 @@ def delete_homework_callback(call):
         conn.close()
 
         bot.answer_callback_query(call.id, f"✅ Задание '{subject_name}' удалено")
+        log_action(call.from_user, "Удаление задания", f"ID: {hw_id}, Предмет: {subject_name}")
 
         if date_str:
             new_call = type('obj', (object,), {
@@ -1515,12 +1518,15 @@ def delete_homework_callback(call):
             pass
         logger.error(f"Ошибка при удалении задания: {e}")
         bot.answer_callback_query(call.id, "❌ Ошибка при удалении задания")
+        log_action(call.from_user, "Ошибка при удалении задания", f"ID: {hw_id}, Ошибка: {str(e)}")
 
 
 @bot.message_handler(commands=['teacher_name'])
 def subject(message):
     if not check_topic_access(message):
         return
+
+    log_action(message.from_user, "Просмотр списка учителей")
 
     markup = types.InlineKeyboardMarkup(row_width=2)
     subjects = ['Математика', 'Информатика', 'Физика', 'История', 'Биология', 'ОБЖ',
@@ -1555,6 +1561,8 @@ def add_birthday_command(message):
         'added_by': f"{message.from_user.first_name or 'Аноним'}"
     }
 
+    log_action(message.from_user, "Начало добавления дня рождения")
+
     text = "🎂 <b>Добавление дня рождения</b>\n\n1. Введите имя одногруппника:\n<i>Пример: Иванов Иван</i>\n\n<i>Или отправьте /cancel для отмены</i>"
 
     if message.chat.type in ['group', 'supergroup'] and TOPIC_ID is not None:
@@ -1579,6 +1587,8 @@ def process_birthday_name(message):
 
     user_data[user_id]['birthday_data']['name'] = message.text
     user_data[user_id]['step'] = 'birthday_month'
+
+    log_action(message.from_user, "Ввод имени для дня рождения", f"Имя: {message.text}")
 
     text = "2. Введите месяц рождения (число от 1 до 12):\n<i>Пример: 1 (для января), 12 (для декабря)</i>\n\n<i>Или отправьте /cancel для отмены</i>"
 
@@ -1607,6 +1617,8 @@ def process_birthday_month(message):
 
         user_data[user_id]['birthday_data']['month'] = month
         user_data[user_id]['step'] = 'birthday_day'
+
+        log_action(message.from_user, "Ввод месяца для дня рождения", f"Месяц: {month}")
 
         text = "3. Введите день рождения (число от 1 до 31):\n<i>Пример: 15, 31</i>\n\n<i>Или отправьте /cancel для отмены</i>"
 
@@ -1660,6 +1672,8 @@ def process_birthday_day(message):
             month_name_genitive = get_month_name(month, 'genitive')
             response = f"✅ <b>День рождения добавлен!</b>\n\n<b>Имя:</b> {name}\n<b>Дата:</b> {day} {month_name_genitive}\n<b>Добавил:</b> {added_by}\n\nДень рождения успешно сохранен."
             markup = create_back_to_menu_button()
+
+            log_action(message.from_user, "Добавление дня рождения", f"Имя: {name}, Дата: {day}.{month}")
 
             if message.chat.type in ['group', 'supergroup'] and TOPIC_ID is not None:
                 bot.send_message(message.chat.id, response, parse_mode='HTML',
@@ -1783,6 +1797,8 @@ def cancel_operation(message):
                     logger.error(f"Ошибка при удалении временного файла: {e}")
         del user_data[user_id]
 
+    log_action(message.from_user, "Отмена операции")
+
     markup = create_back_to_menu_button()
     if message.chat.type in ['group', 'supergroup'] and TOPIC_ID is not None:
         bot.send_message(message.chat.id, "❌ Операция отменена.\n\n🏠 Вы можете вернуться в главное меню.",
@@ -1796,14 +1812,15 @@ def cancel_operation(message):
 @bot.message_handler(commands=['del_mes'])
 def delete_message_command(message):
     """Удаляет сообщение, на которое ответили (только для администратора)"""
-    logger.info(f"Команда /del_mes вызвана пользователем {message.from_user.id}")
+    user_info = get_user_info(message.from_user)
+    log_action(message.from_user, "Команда /del_mes", "Начало выполнения")
 
     # НЕ проверяем check_topic_access для этой команды - она должна работать везде
     user_id = message.from_user.id
 
     # Проверяем права администратора
     if not is_admin(user_id):
-        logger.warning(f"Пользователь {user_id} попытался использовать /del_mes без прав")
+        logger.warning(f"Пользователь {user_info} попытался использовать /del_mes без прав")
         try:
             bot.reply_to(message, "❌ У вас нет прав для удаления сообщений")
         except:
@@ -1812,7 +1829,7 @@ def delete_message_command(message):
 
     # Проверяем, есть ли reply_to_message
     if not message.reply_to_message:
-        logger.warning(f"Админ {user_id} использовал /del_mes без ответа на сообщение")
+        logger.warning(f"Админ {user_info} использовал /del_mes без ответа на сообщение")
         try:
             bot.reply_to(message, "❌ Ответьте на сообщение, которое нужно удалить")
         except:
@@ -1830,7 +1847,7 @@ def delete_message_command(message):
             thread_id = message.message_thread_id
 
         # Логируем попытку удаления
-        logger.info(f"Админ {user_id} удаляет сообщение {target_message_id} в чате {chat_id}, топик: {thread_id}")
+        log_action(message.from_user, "Удаление сообщения", f"ID сообщения: {target_message_id}, Чат: {chat_id}, Топик: {thread_id}")
 
         # Удаляем целевое сообщение
         bot.delete_message(chat_id, target_message_id)
@@ -1855,7 +1872,7 @@ def delete_message_command(message):
         except Exception as e:
             logger.error(f"Ошибка отправки подтверждения: {e}")
 
-        logger.info(f"Сообщение {target_message_id} успешно удалено админом {user_id}")
+        logger.info(f"Сообщение {target_message_id} успешно удалено админом {user_info}")
 
     except Exception as e:
         logger.error(f"Ошибка при удалении сообщения: {e}")
@@ -1866,184 +1883,14 @@ def delete_message_command(message):
             pass
 
 
-@bot.message_handler(commands=['clear'])
-def clear_messages_command(message):
-    """Удаляет несколько последних сообщений (только для администратора и только в топике 60817)"""
-    logger.info(f"Команда /clear вызвана пользователем {message.from_user.id}")
-
-    # Проверяем, что команда в правильном топике
-    if not is_in_correct_topic(message):
-        logger.warning(f"Попытка использования /clear вне топика {TOPIC_ID} от пользователя {message.from_user.id}")
-
-        # Определяем thread_id для ответа
-        thread_id = None
-        if hasattr(message, 'message_thread_id'):
-            thread_id = message.message_thread_id
-
-        error_text = f"❌ Команда /clear доступна только в топике {TOPIC_ID}"
-        try:
-            if thread_id:
-                bot.send_message(message.chat.id, error_text, message_thread_id=thread_id)
-            else:
-                bot.send_message(message.chat.id, error_text)
-        except:
-            pass
-        return
-
-    user_id = message.from_user.id
-
-    # Проверяем права администратора
-    if not is_admin(user_id):
-        logger.warning(f"Пользователь {user_id} попытался использовать /clear без прав")
-        try:
-            bot.reply_to(message, "❌ У вас нет прав для удаления сообщений")
-        except:
-            pass
-        return
-
-    # Получаем аргументы команды
-    args = message.text.split()
-
-    if len(args) != 2:
-        logger.warning(f"Админ {user_id} использовал /clear с неправильным количеством аргументов: {message.text}")
-        help_text = "❌ Неправильный формат команды.\nИспользуйте: /clear <количество_сообщений>\nПример: /clear 5"
-
-        thread_id = None
-        if hasattr(message, 'message_thread_id'):
-            thread_id = message.message_thread_id
-
-        try:
-            if thread_id:
-                bot.send_message(message.chat.id, help_text, message_thread_id=thread_id)
-            else:
-                bot.send_message(message.chat.id, help_text)
-        except:
-            pass
-        return
-
-    try:
-        # Пытаемся преобразовать аргумент в число
-        count = int(args[1])
-
-        # Проверяем, что число положительное и не слишком большое
-        if count <= 0:
-            raise ValueError("Число должно быть положительным")
-        if count > 100:
-            raise ValueError("Нельзя удалять более 100 сообщений за раз")
-
-        # Получаем ID текущего сообщения
-        chat_id = message.chat.id
-        current_message_id = message.message_id
-
-        # Определяем thread_id для ответа
-        thread_id = None
-        if hasattr(message, 'message_thread_id'):
-            thread_id = message.message_thread_id
-
-        # Логируем попытку удаления
-        logger.info(f"Админ {user_id} удаляет {count} сообщений в чате {chat_id}, топик: {thread_id}")
-
-        # Отправляем сообщение о начале удаления
-        try:
-            if thread_id:
-                progress_msg = bot.send_message(chat_id, f"⏳ Удаление {count} сообщений...",
-                                                message_thread_id=thread_id)
-            else:
-                progress_msg = bot.send_message(chat_id, f"⏳ Удаление {count} сообщений...")
-        except Exception as e:
-            logger.error(f"Ошибка отправки прогресса: {e}")
-            progress_msg = None
-
-        deleted_count = 0
-        errors = []
-
-        # Удаляем сообщения в обратном порядке (от новых к старым)
-        # Начинаем с текущего сообщения и идем вниз
-        for msg_id in range(current_message_id, current_message_id - count, -1):
-            try:
-                # Пропускаем сообщение с прогрессом
-                if progress_msg and msg_id == progress_msg.message_id:
-                    continue
-
-                bot.delete_message(chat_id, msg_id)
-                deleted_count += 1
-
-                # Небольшая задержка, чтобы не превысить лимиты API
-                if deleted_count % 10 == 0:
-                    threading.Event().wait(0.1)
-
-            except Exception as e:
-                error_msg = f"ID {msg_id}: {str(e)}"
-                errors.append(error_msg)
-                logger.warning(f"Не удалось удалить сообщение {msg_id}: {e}")
-                continue
-
-        # Пытаемся удалить сообщение о прогрессе
-        if progress_msg:
-            try:
-                bot.delete_message(chat_id, progress_msg.message_id)
-            except Exception as e:
-                logger.warning(f"Не удалось удалить сообщение о прогрессе: {e}")
-
-        # Отправляем отчет об удалении
-        if errors:
-            report = f"✅ Удалено {deleted_count} из {count} сообщений.\n"
-            report += f"❌ Не удалось удалить {len(errors)} сообщений."
-        else:
-            report = f"✅ Успешно удалено {deleted_count} сообщений."
-
-        try:
-            if thread_id:
-                report_msg = bot.send_message(chat_id, report, message_thread_id=thread_id)
-            else:
-                report_msg = bot.send_message(chat_id, report)
-
-            # Удаляем отчет через 5 секунд
-            threading.Timer(5.0, lambda: bot.delete_message(chat_id, report_msg.message_id)).start()
-
-        except Exception as e:
-            logger.error(f"Ошибка отправки отчета: {e}")
-
-        logger.info(f"Админ {user_id} удалил {deleted_count} сообщений")
-
-    except ValueError as e:
-        logger.error(f"Ошибка в аргументе /clear: {e}")
-        error_text = f"❌ Ошибка: {str(e)}\nИспользуйте положительное число (не более 100)."
-
-        thread_id = None
-        if hasattr(message, 'message_thread_id'):
-            thread_id = message.message_thread_id
-
-        try:
-            if thread_id:
-                bot.send_message(message.chat.id, error_text, message_thread_id=thread_id)
-            else:
-                bot.send_message(message.chat.id, error_text)
-        except:
-            pass
-    except Exception as e:
-        logger.error(f"Неизвестная ошибка в /clear: {e}")
-        error_text = f"❌ Произошла ошибка при удалении сообщений: {str(e)}"
-
-        thread_id = None
-        if hasattr(message, 'message_thread_id'):
-            thread_id = message.message_thread_id
-
-        try:
-            if thread_id:
-                bot.send_message(message.chat.id, error_text, message_thread_id=thread_id)
-            else:
-                bot.send_message(message.chat.id, error_text)
-        except:
-            pass
-
-
 @bot.message_handler(commands=['clear_all'])
 def clear_all_messages_command(message):
     """Удаляет все сообщения в топике (только для администратора и только в топике 60817) - ОПАСНАЯ КОМАНДА"""
+    log_action(message.from_user, "Команда /clear_all", "Начало выполнения")
+    
     # Проверяем, что команда в правильном топике
     if not is_in_correct_topic(message):
-        logger.warning(f"Попытка использования /clear_all вне топика {TOPIC_ID} от пользователя {message.from_user.id}")
+        logger.warning(f"Попытка использования /clear_all вне топика {TOPIC_ID} от пользователя {get_user_info(message.from_user)}")
         error_text = f"❌ Команда /clear_all доступна только в топике {TOPIC_ID}"
         bot.send_message(message.chat.id, error_text)
         return
@@ -2052,7 +1899,7 @@ def clear_all_messages_command(message):
 
     # Проверяем права администратора
     if not is_admin(user_id):
-        logger.warning(f"Пользователь {user_id} попытался использовать /clear_all без прав")
+        logger.warning(f"Пользователь {get_user_info(message.from_user)} попытался использовать /clear_all без прав")
         bot.send_message(message.chat.id, "❌ У вас нет прав для удаления сообщений")
         return
 
@@ -2070,6 +1917,8 @@ def clear_all_messages_command(message):
             'chat_id': message.chat.id
         }
 
+        log_action(message.from_user, "Запрос подтверждения /clear_all")
+
         bot.send_message(message.chat.id, confirm_text, parse_mode='HTML')
 
     except Exception as e:
@@ -2079,6 +1928,8 @@ def clear_all_messages_command(message):
 @bot.message_handler(commands=['confirm_clear_all'])
 def confirm_clear_all_command(message):
     """Подтверждение удаления всех сообщений"""
+    log_action(message.from_user, "Команда /confirm_clear_all", "Начало выполнения")
+    
     # Проверяем, что команда в правильном топике
     if not is_in_correct_topic(message):
         return
@@ -2096,7 +1947,8 @@ def confirm_clear_all_command(message):
         # Удаляем состояние подтверждения
         del user_data[user_id]
 
-        logger.warning(f"Админ {user_id} начал удаление ВСЕХ сообщений в чате {chat_id}")
+        user_info = get_user_info(message.from_user)
+        logger.warning(f"Админ {user_info} начал удаление ВСЕХ сообщений в чате {chat_id}")
 
         # Отправляем предупреждение
         warning_msg = bot.send_message(chat_id, "⚠️ Начинаю удаление ВСЕХ сообщений... Это может занять время.")
@@ -2129,8 +1981,98 @@ def confirm_clear_all_command(message):
         # Удаляем финальное сообщение через 10 секунд
         threading.Timer(10.0, lambda: bot.delete_message(chat_id, warning_msg.message_id)).start()
 
+        log_action(message.from_user, "Завершение /clear_all", f"Удалено сообщений: {deleted_total}")
+
     except Exception as e:
         logger.error(f"Ошибка в /confirm_clear_all: {e}")
+        log_action(message.from_user, "Ошибка в /confirm_clear_all", f"Ошибка: {str(e)}")
+
+
+@bot.message_handler(commands=['call_all'])
+def call_all_members_command(message):
+    """Упоминает всех участников чата в одном сообщении (только для администратора)"""
+    log_action(message.from_user, "Команда /call_all", "Начало выполнения")
+    
+    # Проверяем, что команда используется в групповом чате
+    if message.chat.type not in ['group', 'supergroup']:
+        bot.send_message(message.chat.id, "❌ Эта команда работает только в групповых чатах")
+        log_action(message.from_user, "Попытка использования /call_all не в групповом чате")
+        return
+
+    user_id = message.from_user.id
+
+    # Проверяем права администратора
+    if not is_admin(user_id):
+        logger.warning(f"Пользователь {get_user_info(message.from_user)} попытался использовать /call_all без прав")
+        bot.send_message(message.chat.id, "❌ У вас нет прав для упоминания всех участников")
+        return
+
+    try:
+        # Получаем информацию о чате
+        chat_id = message.chat.id
+        
+        # Определяем thread_id для ответа
+        thread_id = None
+        if hasattr(message, 'message_thread_id'):
+            thread_id = message.message_thread_id
+        
+        # Пытаемся получить количество участников
+        try:
+            chat_member_count = bot.get_chat_member_count(chat_id)
+        except:
+            chat_member_count = 0
+        
+        log_action(message.from_user, "Упоминание всех участников", f"Чат: {chat_id}, Участников: {chat_member_count}")
+        
+        # Создаем скрытое упоминание всех участников
+        # Используем невидимый символ Zero Width Space (U+200B) и упоминание @all
+        # Это создаст уведомление для всех, но сообщение будет выглядеть коротким
+        mention_text = "​👥"  # Содержит невидимый символ для скрытого упоминания
+        
+        # Добавляем текст для привлечения внимания
+        notification_text = "🔔 <b>Внимание всем участникам чата!</b>"
+        
+        # Комбинируем текст
+        full_text = f"{mention_text}\n\n{notification_text}"
+        
+        # Отправляем сообщение
+        try:
+            if thread_id:
+                mention_message = bot.send_message(chat_id, full_text, parse_mode='HTML', 
+                                                  message_thread_id=thread_id)
+            else:
+                mention_message = bot.send_message(chat_id, full_text, parse_mode='HTML')
+            
+            # Удаляем команду /call_all
+            try:
+                bot.delete_message(chat_id, message.message_id)
+            except Exception as e:
+                logger.warning(f"Не удалось удалить сообщение с командой /call_all: {e}")
+            
+            # Удаляем упоминание через 5 секунд (чтобы оно было кратковременным)
+            threading.Timer(5.0, lambda: delete_call_message(chat_id, mention_message.message_id, thread_id)).start()
+            
+            log_action(message.from_user, "Упоминание отправлено", "Сообщение будет удалено через 5 секунд")
+            
+        except Exception as e:
+            logger.error(f"Ошибка отправки упоминания: {e}")
+            bot.send_message(message.chat.id, "❌ Не удалось отправить упоминание")
+            
+    except Exception as e:
+        logger.error(f"Ошибка в /call_all: {e}")
+        bot.send_message(message.chat.id, f"❌ Ошибка при выполнении команды: {str(e)}")
+
+
+def delete_call_message(chat_id, message_id, thread_id=None):
+    """Удаляет сообщение с упоминанием всех участников"""
+    try:
+        if thread_id:
+            bot.delete_message(chat_id, message_id)
+        else:
+            bot.delete_message(chat_id, message_id)
+        logger.info(f"Сообщение с упоминанием удалено: chat_id={chat_id}, message_id={message_id}")
+    except Exception as e:
+        logger.error(f"Ошибка при удалении сообщения с упоминанием: {e}")
 
 
 @bot.message_handler(commands=['admin_help'])
@@ -2143,8 +2085,8 @@ def admin_help_command(message):
     if is_admin(user_id):
         help_text += "<b>Доступные команды:</b>\n"
         help_text += "<code>/del_mes</code> - удалить сообщение (ответьте на него) - работает везде\n"
-        help_text += f"<code>/clear X</code> - удалить последние X сообщений (только в топике {TOPIC_ID})\n"
         help_text += f"<code>/clear_all</code> - удалить все сообщения в топике (только в топике {TOPIC_ID})\n"
+        help_text += "<code>/call_all</code> - упомянуть всех участников чата (кратковременное сообщение)\n"
         help_text += "<code>/add_exam</code> - добавить зачёт\n"
         help_text += "<code>/delete_exam</code> - удалить зачёт\n\n"
     else:
@@ -2178,6 +2120,8 @@ def add_exam_command_handler(message):
         'topic_id': message.message_thread_id if hasattr(message, 'message_thread_id') else None
     }
 
+    log_action(message.from_user, "Начало добавления зачета")
+
     text = "📝 <b>Добавление зачета</b>\n\n1. Введите название предмета:\n<i>Пример: Математика, Физика</i>\n\n<i>Или отправьте /cancel для отмены</i>"
 
     if message.chat.type in ['group', 'supergroup'] and TOPIC_ID is not None:
@@ -2206,6 +2150,8 @@ def process_exam_subject_name(message):
     user_data[user_id]['subject_name'] = message.text
     user_data[user_id]['step'] = 'exam_description'
 
+    log_action(message.from_user, "Ввод названия предмета для зачета", f"Предмет: {message.text}")
+
     text = "2. Введите описание зачета (что нужно подготовить):\n<i>Можно оставить пустым, отправив \"-\"</i>\n\n<i>Или отправьте /cancel для отмены</i>"
 
     if message.chat.type in ['group', 'supergroup'] and TOPIC_ID is not None:
@@ -2231,6 +2177,8 @@ def process_exam_description(message):
 
     user_data[user_id]['description'] = message.text if message.text != "-" else ""
     user_data[user_id]['step'] = 'exam_date'
+
+    log_action(message.from_user, "Ввод описания зачета")
 
     text = "3. Введите дату зачета:\n<i>Формат: ДД.ММ.ГГГГ</i>\n\n<i>Или отправьте /cancel для отмены</i>"
 
@@ -2267,6 +2215,8 @@ def process_exam_date(message):
             response += f"📅 Дата: {date_input}\n"
             if user_data[user_id]['description']:
                 response += f"📝 Описание: {user_data[user_id]['description']}\n"
+
+            log_action(message.from_user, "Добавление зачета", f"Предмет: {user_data[user_id]['subject_name']}, Дата: {date_input}")
 
             if message.chat.type in ['group', 'supergroup'] and TOPIC_ID is not None:
                 bot.send_message(message.chat.id, response, parse_mode='HTML',
@@ -2473,6 +2423,7 @@ def delete_exam_callback(call, exam_id):
     """Удаляет зачет (только для админа)"""
     if not is_admin(call.from_user.id):
         bot.answer_callback_query(call.id, "❌ У вас нет прав для удаления зачетов")
+        log_action(call.from_user, "Попытка удаления зачета без прав", f"ID зачета: {exam_id}")
         return
 
     conn = sqlite3.connect('homework.db')
@@ -2491,6 +2442,7 @@ def delete_exam_callback(call, exam_id):
             conn.commit()
 
             bot.answer_callback_query(call.id, f"✅ Зачет '{subject_name}' удален")
+            log_action(call.from_user, "Удаление зачета", f"ID: {exam_id}, Предмет: {subject_name}")
             logger.info(f"Зачет удален: ID={exam_id}, предмет={subject_name}")
 
             # Возвращаемся в меню зачетов
@@ -2507,6 +2459,7 @@ def delete_exam_callback(call, exam_id):
     except Exception as e:
         logger.error(f"Ошибка при удалении зачета: {e}")
         bot.answer_callback_query(call.id, "❌ Ошибка при удалении зачета")
+        log_action(call.from_user, "Ошибка при удалении зачета", f"ID: {exam_id}, Ошибка: {str(e)}")
     finally:
         conn.close()
 
@@ -2583,8 +2536,8 @@ if __name__ == '__main__':
     # Добавляем информацию о командах администратора в логи
     logger.info("Команды администратора активированы:")
     logger.info("/del_mes - удалить сообщение (ответьте на него) - работает везде")
-    logger.info(f"/clear X - удалить последние X сообщений (только в топике {TOPIC_ID})")
     logger.info(f"/clear_all - удалить все сообщения в топике (только в топике {TOPIC_ID})")
+    logger.info("/call_all - упомянуть всех участников чата (кратковременное сообщение)")
     logger.info("/admin_help - справка по командам администратора")
 
     try:
