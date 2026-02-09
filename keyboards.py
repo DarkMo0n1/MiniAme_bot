@@ -1,5 +1,6 @@
+# keyboards.py
 from telebot import types
-from main import is_admin
+from auth import is_admin
 
 def create_main_menu():
     """Создает главное меню (доступно всем)"""
@@ -92,5 +93,5 @@ def create_reference_materials_menu(user_id):
             types.InlineKeyboardButton('📋 Запросы на добавление', callback_data='view_pending_requests')
         )
 
-    markup.add(types.InlineKeyboardButton('🔙 Назад', callback_data='main_menu'))
+    markup.add(types.InlineKeyboardButton('🔙 Назад', callback_data="main_menu"))
     return markup

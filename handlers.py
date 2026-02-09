@@ -1,14 +1,43 @@
+# handlers.py
 import sqlite3
 import os
 from datetime import datetime, timedelta
 from telebot import types
-from main import bot, user_data, FILES_DIR, TOPIC_ID, is_admin, check_topic_access, log_action
+
+# Импорт из config и bot_instance
+from config import FILES_DIR, TOPIC_ID
+from bot_instance import bot
 from keyboards import *
-from file_handlers import save_file_locally, generate_unique_filename
+from auth import is_admin
 import logging
 
 logger = logging.getLogger(__name__)
 
+# Импорт функций из main
+from main import (
+    user_data,
+    log_action,
+    check_topic_access,
+    cancel_operation,
+    get_user_info
+)
+
+# Импорт функций из file_handlers
+from file_handlers import (
+    save_file_locally,
+    generate_unique_filename,
+    save_solution_to_db,
+    add_exam_command_handler,
+    show_exam_dates_list,
+    show_exams_for_date,
+    show_exams_for_deletion,
+    delete_exam_callback,
+    show_upcoming_exams,
+    show_exam_files,
+    finish_adding_exam_files,
+    skip_adding_exam_files,
+    cancel_exam_operation
+)
 # ===== ОБРАБОТЧИКИ CALLBACK =====
 
 @bot.callback_query_handler(func=lambda call: True)
@@ -1249,32 +1278,6 @@ def show_birthdays_for_month(call, month_num):
         parse_mode='HTML',
         reply_markup=markup
     )
-
-# ===== ФУНКЦИИ ДЛЯ ЗАЧЕТОВ =====
-
-def add_exam_command_handler(message):
-    from file_handlers import add_exam_command_handler
-    add_exam_command_handler(message)
-
-def show_exam_dates_list(call):
-    from file_handlers import show_exam_dates_list
-    show_exam_dates_list(call)
-
-def show_exams_for_date(call, date_str, user_id):
-    from file_handlers import show_exams_for_date
-    show_exams_for_date(call, date_str, user_id)
-
-def show_exams_for_deletion(call):
-    from file_handlers import show_exams_for_deletion
-    show_exams_for_deletion(call)
-
-def delete_exam_callback(call, exam_id):
-    from file_handlers import delete_exam_callback
-    delete_exam_callback(call, exam_id)
-
-def show_upcoming_exams(call):
-    from file_handlers import show_upcoming_exams
-    show_upcoming_exams(call)
 
 # ===== ФУНКЦИИ ДЛЯ РЕШЕНИЙ =====
 

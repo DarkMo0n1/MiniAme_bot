@@ -256,3 +256,32 @@ def add_birthday_to_file(name, month, day, added_by):
     except Exception as e:
         logger.error(f"Ошибка: {e}")
         return False
+
+
+def get_birthdays_by_month(month):
+    """Возвращает дни рождения для указанного месяца"""
+    conn = sqlite3.connect('homework.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT name, day FROM birthdays WHERE month = ? ORDER BY day', (month,))
+    birthdays = cursor.fetchall()
+    conn.close()
+    return birthdays
+
+
+def get_month_name(month_num, case='nominative'):
+    """Возвращает название месяца в указанном падеже"""
+    months_nominative = [
+        'Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь',
+        'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'
+    ]
+    months_genitive = [
+        'января', 'февраля', 'марта', 'апреля', 'мая', 'июня',
+        'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'
+    ]
+
+    if 1 <= month_num <= 12:
+        if case == 'genitive':
+            return months_genitive[month_num - 1]
+        else:
+            return months_nominative[month_num - 1]
+    return ''
