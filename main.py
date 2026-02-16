@@ -56,12 +56,11 @@ def check_topic_access(message):
     if message.chat.type == 'private':
         return True
     if message.chat.type in ['group', 'supergroup']:
-        # В группах с топиками требуем наличие message_thread_id и его совпадение
-        if hasattr(message, 'message_thread_id'):
-            return message.message_thread_id == TOPIC_ID
-        else:
-            # Если топики включены, но у сообщения нет атрибута — игнорируем
-            return False
+        # Если у сообщения нет thread_id, значит группа без топиков — разрешаем
+        if not hasattr(message, 'message_thread_id'):
+            return True
+        # Иначе сравниваем с целевым топиком
+        return message.message_thread_id == TOPIC_ID
     return False
 
 
