@@ -506,6 +506,18 @@ def process_homework_description(message):
         bot.send_message(message.chat.id, text, parse_mode='HTML', message_thread_id=TOPIC_ID)
     else:
         bot.send_message(message.chat.id, text, parse_mode='HTML')
+@bot.message_handler(
+    func=lambda message: message.from_user.id in user_data and
+                         user_data[message.from_user.id].get('step') == 'file_choice')
+def handle_file_choice_text(message):
+    """Напоминает пользователю, что нужно выбрать действие кнопками"""
+    user_id = message.from_user.id
+    text = "⚠️ Пожалуйста, используйте кнопки ниже для выбора действия (прикрепить файл / сохранить без файла / отменить)."
+    if message.chat.type in ['group', 'supergroup'] and TOPIC_ID is not None:
+        bot.send_message(message.chat.id, text, message_thread_id=TOPIC_ID)
+    else:
+        bot.send_message(message.chat.id, text)
+
 
 @bot.message_handler(
     func=lambda message: message.from_user.id in user_data and user_data.get(message.from_user.id, {}).get(
