@@ -56,13 +56,12 @@ def check_topic_access(message):
     if message.chat.type == 'private':
         return True
     if message.chat.type in ['group', 'supergroup']:
-        # Если у сообщения нет thread_id, значит группа без топиков — разрешаем
-        if not hasattr(message, 'message_thread_id'):
+        # Если у сообщения нет thread_id (группа без топиков) — разрешаем
+        if not hasattr(message, 'message_thread_id') or message.message_thread_id is None:
             return True
         # Иначе сравниваем с целевым топиком
         return message.message_thread_id == TOPIC_ID
     return False
-
 
 def is_in_correct_topic(message):
     """Проверяет, находится ли сообщение в правильном топике"""

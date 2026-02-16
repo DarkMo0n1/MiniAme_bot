@@ -136,7 +136,7 @@ def handle_all_callbacks(call):
     # Обработчики домашних заданий
     elif call.data == 'add_homework_menu':
         bot.answer_callback_query(call.id)
-        add_homework_command(call.message)
+        add_homework_command(call.message, call.from_user)  # передаём объект пользователя
 
     elif call.data == 'view_homework_menu':
         bot.answer_callback_query(call.id)
@@ -421,11 +421,11 @@ def handle_exam_callback(call):
 # ===== ФУНКЦИИ ДЛЯ ДОМАШНИХ ЗАДАНИЙ =====
 
 @bot.message_handler(commands=['add_homework'])
-def add_homework_command(message):
+def add_homework_command(message, user):
     if not check_topic_access(message):
         return
 
-    user_id = message.from_user.id
+    user_id = user.id
     if user_id in user_data:
         if 'temp_files' in user_data[user_id]:
             for file_name in user_data[user_id]['temp_files']:
@@ -441,12 +441,12 @@ def add_homework_command(message):
         'step': 'subject_name',
         'files': [],
         'temp_files': [],
-        'added_by': f"{message.from_user.first_name or 'Аноним'}",
+        'added_by': f"{user.first_name or 'Аноним'}",
         'chat_id': message.chat.id,
         'topic_id': message.message_thread_id if hasattr(message, 'message_thread_id') else None
     }
 
-    log_action(message.from_user, "Начало добавления домашнего задания")
+    log_action(user, "Начало добавления домашнего задания")
 
     text = "📝 <b>Добавление домашнего задания</b>\n\n1. Введите название предмета:\n<i>Пример: Математика, Физика</i>\n\n<i>Или отправьте /cancel для отмены</i>"
 
@@ -456,7 +456,6 @@ def add_homework_command(message):
     else:
         bot.send_message(message.chat.id, text, parse_mode='HTML',
                          reply_markup=create_back_to_menu_button())
-
 @bot.message_handler(
     func=lambda message: message.from_user.id in user_data and user_data.get(message.from_user.id, {}).get(
         'step') == 'subject_name')
