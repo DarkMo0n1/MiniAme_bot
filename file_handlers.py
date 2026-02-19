@@ -2,6 +2,7 @@
 import os
 import sqlite3
 import logging
+from main import check_topic_access
 from datetime import datetime, timedelta
 from telebot import types
 
@@ -268,6 +269,12 @@ def send_error(message, text):
     else:
         bot.send_message(message.chat.id, text)
 
+def send_message_safe(message, text, parse_mode=None, reply_markup=None):
+    """Отправляет сообщение с учётом топика"""
+    if message.chat.type in ['group', 'supergroup'] and TOPIC_ID is not None:
+        bot.send_message(message.chat.id, text, parse_mode=parse_mode, reply_markup=reply_markup, message_thread_id=TOPIC_ID)
+    else:
+        bot.send_message(message.chat.id, text, parse_mode=parse_mode, reply_markup=reply_markup)
 
 # ===== КОМАНДЫ ДЛЯ ЗАВЕРШЕНИЯ ДОБАВЛЕНИЯ ФАЙЛОВ =====
 
@@ -1080,3 +1087,105 @@ def show_upcoming_exams(call):
         parse_mode='HTML',
         reply_markup=markup
     )
+
+@bot.message_handler(
+    func=lambda message: message.from_user.id in user_data and user_data.get(message.from_user.id, {}).get('step') == 'exam_subject_name')
+def process_exam_subject_name(message):
+    from main import check_topic_access, user_data, log_action
+    if not check_topic_access(message):
+        return
+    user_id = message.from_user.id
+    if message.text.lower() == '/cancel':
+        cancel_exam_operation(message)
+        return
+
+    user_data[user_id]['subject_name'] = message.text
+    user_data[user_id]['step'] = 'exam_description'
+    log_action(message.from_user, "Ввод названия предмета для зачёта", f"Предмет: {message.text}")
+
+    text = "2. Введите описание зачёта (можно оставить пустым, отправив '-'):\n<i>Или отправьте /cancel для отмены</i>"
+    send_message_safe(message, text, parse_mode='HTML')
+
+@bot.message_handler(
+    func=lambda message: message.from_user.id in user_data and user_data.get(message.from_user.id, {}).get('step') == 'exam_description')
+def process_exam_description(message):
+    from main import check_topic_access, user_data, log_action
+    if not check_topic_access(message):
+        return
+    user_id = message.from_user.id
+    if message.text.lower() == '/cancel':
+        cancel_exam_operation(message)
+        return
+
+    description = message.text if message.text != "-" else ""
+    user_data[user_id]['description'] = description
+    user_data[user_id]['step'] = 'exam_date'
+    log_action(message.from_user, "Ввод описания зачёта")
+
+    text = "3. Введите дату зачёта в формате ДД.ММ.ГГГГ (или сегодня/завтра/послезавтра):\n<i>Или отправьте /cancel для отмены</i>"
+    send_message_safe(message, text, parse_mode='HTML')
+
+@bot.message_handler(
+    func=lambda message: message.from_user.id in user_data and user_data.get(message.from_user.id, {}).get('step') == 'exam_date')
+def process_exam_date(message):
+    from main import check_topic_access, user_data, log_action
+    from datetime import datetime, timedelta
+    if not check_topic_access(message):
+        return
+    user_id = message.from_user.id
+    if message.text.lower() == '/cancel':
+        cancel_exam_operation(message)
+        return
+
+    date_input = message.text.lower()
+    try:
+        if date_input == 'сегодня':
+            date_obj = datetime.now()
+        elif date_input == 'завтра':
+            date_obj = datetime.now() + timedelta(days=1)
+        elif date_input == 'послезавтра':
+            date_obj = datetime.now() + timedelta(days=2)
+        else:
+            date_obj = datetime.strptime(date_input, '%d.%m.%Y')
+
+        user_data[user_id]['exam_date'] = date_obj.strftime('%Y-%m-%d')
+        log_action(message.from_user, "Ввод даты зачёта", f"Дата: {date_input}")
+
+        # Показываем сводку и клавиатуру выбора файлов
+        summary = get_exam_summary(user_id)
+        markup = types.InlineKeyboardMarkup(row_width=2)
+        markup.add(
+            types.InlineKeyboardButton('📎 Прикрепить файлы', callback_data='attach_exam_file'),
+            types.InlineKeyboardButton('✅ Без файлов', callback_data='save_exam_without_file'),
+            types.InlineKeyboardButton('❌ Отменить', callback_data='cancel_exam_add')
+        )
+        text = f"📋 <b>Сводка зачёта:</b>\n\n{summary}\n\nХотите прикрепить файлы для подготовки?"
+        send_message_safe(message, text, parse_mode='HTML', reply_markup=markup)
+
+    except ValueError:
+        text = "❌ <b>Неверный формат даты!</b>\nИспользуйте: ДД.ММ.ГГГГ, сегодня, завтра или послезавтра\n\nПопробуйте снова:"
+        send_message_safe(message, text, parse_mode='HTML')
+
+def get_exam_summary(user_id):
+    data = user_data.get(user_id, {})
+    subject = data.get('subject_name', 'Не указано')
+    description = data.get('description', 'Нет описания')
+    date_str = data.get('exam_date', 'Не указана')
+    added_by = data.get('added_by', 'Аноним')
+
+    try:
+        date_obj = datetime.strptime(date_str, '%Y-%m-%d')
+        formatted_date = date_obj.strftime('%d.%m.%Y')
+    except:
+        formatted_date = date_str
+
+    return (f"<b>📌 Предмет:</b> {subject}\n"
+            f"<b>📝 Описание:</b> {description}\n"
+            f"<b>📅 Дата зачёта:</b> {formatted_date}\n"
+            f"<b>👤 Добавит:</b> {added_by}")
+
+def send_message_safe(message, text, parse_mode=None, reply_markup=None):
+    if message.chat.type in ['group', 'supergroup'] and TOPIC_ID is not None:
+        bot.send_message(message.chat.id, text, parse_mode=parse_mode, reply_markup=reply_markup, message_thread_id=TOPIC_ID)
+    else:
+        bot.send_message(message.chat.id, text, parse_mode=parse_mode, reply_markup=reply_markup)

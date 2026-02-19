@@ -1086,24 +1086,24 @@ def show_help_menu(call):
     help_text = """
 📚 <b>Доступные команды:</b>
 
-<code>/add_homework</code> - Добавить домашнее задание
-<code>/view_homework</code> - Посмотреть все задания
-<code>/today_homework</code> - Задания на сегодня
-<code>/tomorrow_homework</code> - Задания на завтра
-<code>/teacher_name</code> - Узнать имя учителя
-<code>/add_birthday</code> - Добавить день рождения
-<code>/cancel</code> - Отменить операцию
-<code>/help</code> - Справка
-<code>/admin_help</code> - Команды администратора
+<code>/add_homework</code> – добавить домашнее задание
+<code>/view_homework</code> – посмотреть все задания
+<code>/today_homework</code> – задания на сегодня
+<code>/tomorrow_homework</code> – задания на завтра
+<code>/solution &lt;номер&gt;</code> – добавить решение к заданию
+<code>/teacher_name</code> – узнать имя учителя
+<code>/add_birthday</code> – добавить день рождения
+<code>/cancel</code> – отменить текущую операцию
+<code>/help</code> – эта справка
+<code>/admin_help</code> – команды для администраторов
 
 💡 <b>Особенности:</b>
-• Все задания общие для всех
-• Можно прикреплять несколько файлов
-• Для завершения добавления файлов отправьте <code>/done</code>
-• Для пропуска отправьте <code>/skip</code>
-• Задания может удалить только администратор
+• Все задания общие для всех.
+• Можно прикреплять несколько файлов (фото, документы, аудио, видео).
+• Для завершения добавления файлов отправьте <code>/done</code>.
+• Для пропуска файлов – <code>/skip</code>.
+• Задания может удалить только администратор.
     """
-
     bot.edit_message_text(
         chat_id=call.message.chat.id,
         message_id=call.message.message_id,
@@ -1139,6 +1139,8 @@ def add_birthday_command(message):
     else:
         bot.send_message(message.chat.id, text, parse_mode='HTML',
                          reply_markup=create_back_to_menu_button())
+
+
 
 @bot.message_handler(
     func=lambda message: message.from_user.id in user_data and user_data.get(message.from_user.id, {}).get(

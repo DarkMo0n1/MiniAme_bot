@@ -117,7 +117,11 @@ def cancel_operation(message):
 # Основной цикл
 if __name__ == '__main__':
     from database import init_db
+    from notifications import birthday_scheduler
 
+    birthday_thread = threading.Thread(target=birthday_scheduler, daemon=True)
+    birthday_thread.start()
+    logger.info("Планировщик дней рождения запущен")
     init_db()
     logger.info("Бот запущен!")
     logger.info(f"Администраторы: {ADMIN_IDS}")
