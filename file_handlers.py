@@ -433,19 +433,19 @@ def save_solution_to_db(user_id):
 
 # ===== ФУНКЦИИ ДЛЯ ЗАЧЕТОВ =====
 
-def add_exam_command_handler(message):
+def add_exam_command_handler(call):
     """Начинает процесс добавления зачета с возможностью прикрепления файлов"""
-    user_id = message.from_user.id
+    user_id = call.from_user.id
     if not is_admin(user_id):
-        if message.chat.type in ['group', 'supergroup'] and TOPIC_ID is not None:
-            bot.send_message(message.chat.id, "❌ У вас нет прав для добавления зачетов",
+        if call.message.chat.type in ['group', 'supergroup'] and TOPIC_ID is not None:
+            bot.send_message(call.message.chat.id, "❌ У вас нет прав для добавления зачетов",
                              message_thread_id=TOPIC_ID)
         else:
-            bot.send_message(message.chat.id, "❌ У вас нет прав для добавления зачетов")
+            bot.send_message(call.message.chat.id, "❌ У вас нет прав для добавления зачетов")
         return
 
+    # Очистка предыдущих данных пользователя
     if user_id in user_data:
-        # Очищаем временные файлы, если есть
         if 'exam_temp_files' in user_data[user_id]:
             for file_name in user_data[user_id]['exam_temp_files']:
                 try:
@@ -460,20 +460,20 @@ def add_exam_command_handler(message):
         'step': 'exam_subject_name',
         'exam_files': [],
         'exam_temp_files': [],
-        'added_by': f"{message.from_user.first_name or 'Аноним'}",
-        'chat_id': message.chat.id,
-        'topic_id': message.message_thread_id if hasattr(message, 'message_thread_id') else None
+        'added_by': f"{call.from_user.first_name or 'Аноним'}",
+        'chat_id': call.message.chat.id,
+        'topic_id': call.message.message_thread_id if hasattr(call.message, 'message_thread_id') else None
     }
 
-    log_action(message.from_user, "Начало добавления зачета с файлами")
+    log_action(call.from_user, "Начало добавления зачета с файлами")
 
     text = "📝 <b>Добавление зачета</b>\n\n1. Введите название предмета:\n<i>Пример: Математика, Физика</i>\n\n<i>Или отправьте /cancel для отмены</i>"
 
-    if message.chat.type in ['group', 'supergroup'] and TOPIC_ID is not None:
-        bot.send_message(message.chat.id, text, parse_mode='HTML',
+    if call.message.chat.type in ['group', 'supergroup'] and TOPIC_ID is not None:
+        bot.send_message(call.message.chat.id, text, parse_mode='HTML',
                          reply_markup=create_back_to_menu_button(), message_thread_id=TOPIC_ID)
     else:
-        bot.send_message(message.chat.id, text, parse_mode='HTML',
+        bot.send_message(call.message.chat.id, text, parse_mode='HTML',
                          reply_markup=create_back_to_menu_button())
 
 

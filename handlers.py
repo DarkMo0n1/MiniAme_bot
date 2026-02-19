@@ -103,7 +103,7 @@ def handle_all_callbacks(call):
     elif call.data == 'add_exam_menu':
         bot.answer_callback_query(call.id)
         if is_admin(user_id):
-            add_exam_command_handler(call.message)
+            add_exam_command_handler(call)
         else:
             bot.answer_callback_query(call.id, "❌ У вас нет прав для добавления зачетов")
 
