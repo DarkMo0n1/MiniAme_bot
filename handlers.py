@@ -1,4 +1,3 @@
-# handlers.py
 import sqlite3
 import os
 from datetime import datetime, timedelta
@@ -38,8 +37,198 @@ from file_handlers import (
     skip_adding_exam_files,
     cancel_exam_operation
 )
-# ===== ОБРАБОТЧИКИ CALLBACK =====
 
+# ===== НОВЫЕ ФУНКЦИИ ДЛЯ РЕШЕНИЙ =====
+
+def save_text_solution_to_db(user_id, text):
+    """Сохраняет текстовое решение в базу данных"""
+    if user_id not in user_data or 'homework_id' not in user_data[user_id]:
+        return False
+    try:
+        conn = sqlite3.connect('homework.db')
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT INTO homework_solutions (homework_id, solution_text, added_by)
+            VALUES (?, ?, ?)
+        ''', (
+            user_data[user_id]['homework_id'],
+            text,
+            user_data[user_id].get('added_by', 'Аноним')
+        ))
+        conn.commit()
+        conn.close()
+        logger.info(f"Текстовое решение сохранено для задания {user_data[user_id]['homework_id']}")
+        return True
+    except Exception as e:
+        logger.error(f"Ошибка сохранения текстового решения: {e}")
+        return False
+
+
+def show_homework_solutions(call, hw_id):
+    """Показывает все решения (файлы и тексты) для указанного задания"""
+    chat_id = call.message.chat.id
+    message_id = call.message.message_id
+    thread_id = None
+    if call.message.chat.type in ['group', 'supergroup'] and hasattr(call.message, 'message_thread_id'):
+        thread_id = call.message.message_thread_id
+
+    conn = sqlite3.connect('homework.db')
+    cursor = conn.cursor()
+
+    # Информация о задании
+    cursor.execute('SELECT subject_name, homework_description, added_by FROM homework WHERE id = ?', (hw_id,))
+    hw_info = cursor.fetchone()
+    if not hw_info:
+        bot.answer_callback_query(call.id, "❌ Задание не найдено")
+        conn.close()
+        return
+    subject_name, homework_description, added_by = hw_info
+
+    # Получаем все решения
+    cursor.execute('''
+        SELECT file_name, file_type, original_name, solution_text, added_by
+        FROM homework_solutions
+        WHERE homework_id = ?
+        ORDER BY created_at
+    ''', (hw_id,))
+    solutions = cursor.fetchall()
+    conn.close()
+
+    if not solutions:
+        response = f"📝 <b>Решения к заданию:</b> {subject_name}\n"
+        response += f"👤 <b>Добавил:</b> {added_by}\n"
+        if homework_description:
+            response += f"<b>Описание:</b> {homework_description}\n"
+        response += "\n📭 К этому заданию ещё нет решений."
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton("🔙 Назад к заданиям", callback_data="back_to_dates"))
+        markup.add(types.InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu"))
+        bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=message_id,
+            text=response,
+            parse_mode='HTML',
+            reply_markup=markup
+        )
+        return
+
+    # Формируем сводку и отправляем все решения
+    file_count = sum(1 for s in solutions if s[0] is not None)  # файлы
+    text_count = sum(1 for s in solutions if s[3] is not None)  # тексты
+
+    summary = f"📝 <b>Решения к заданию:</b> {subject_name}\n"
+    summary += f"👤 <b>Добавил:</b> {added_by}\n"
+    if homework_description:
+        summary += f"<b>Описание:</b> {homework_description}\n"
+    summary += f"\n📎 <b>Всего решений:</b> {len(solutions)} (файлов: {file_count}, текстов: {text_count})\n"
+    summary += "📤 <b>Отправляю...</b>"
+
+    bot.answer_callback_query(call.id, f"📤 Отправляю {len(solutions)} решений...")
+    bot.edit_message_text(
+        chat_id=chat_id,
+        message_id=message_id,
+        text=summary,
+        parse_mode='HTML'
+    )
+
+    # Отправляем каждое решение
+    for file_name, file_type, original_name, solution_text, sol_added_by in solutions:
+        if solution_text:  # текстовое решение
+            msg = f"📝 <b>Текстовое решение</b> (от {sol_added_by}):\n\n{solution_text}"
+            if thread_id:
+                bot.send_message(chat_id, msg, parse_mode='HTML', message_thread_id=thread_id)
+            else:
+                bot.send_message(chat_id, msg, parse_mode='HTML')
+        elif file_name:  # файловое решение
+            file_path = os.path.join(FILES_DIR, file_name)
+            if not os.path.exists(file_path):
+                logger.error(f"Файл решения не найден: {file_path}")
+                continue
+            try:
+                with open(file_path, 'rb') as file:
+                    caption = f"📎 <b>Решение</b> (от {sol_added_by})"
+                    if original_name:
+                        caption = f"📁 {original_name}\n{caption}"
+                    if file_type == 'фото':
+                        if thread_id:
+                            bot.send_photo(chat_id, file, caption=caption, parse_mode='HTML', message_thread_id=thread_id)
+                        else:
+                            bot.send_photo(chat_id, file, caption=caption, parse_mode='HTML')
+                    elif file_type == 'документ':
+                        if thread_id:
+                            bot.send_document(chat_id, file, caption=caption, parse_mode='HTML', message_thread_id=thread_id)
+                        else:
+                            bot.send_document(chat_id, file, caption=caption, parse_mode='HTML')
+                    elif file_type == 'аудио':
+                        if thread_id:
+                            bot.send_audio(chat_id, file, caption=caption, parse_mode='HTML', message_thread_id=thread_id)
+                        else:
+                            bot.send_audio(chat_id, file, caption=caption, parse_mode='HTML')
+                    elif file_type == 'видео':
+                        if thread_id:
+                            bot.send_video(chat_id, file, caption=caption, parse_mode='HTML', message_thread_id=thread_id)
+                        else:
+                            bot.send_video(chat_id, file, caption=caption, parse_mode='HTML')
+                    elif file_type == 'голосовое сообщение':
+                        if thread_id:
+                            bot.send_voice(chat_id, file, caption=caption, parse_mode='HTML', message_thread_id=thread_id)
+                        else:
+                            bot.send_voice(chat_id, file, caption=caption, parse_mode='HTML')
+                    else:
+                        if thread_id:
+                            bot.send_document(chat_id, file, caption=caption, parse_mode='HTML', message_thread_id=thread_id)
+                        else:
+                            bot.send_document(chat_id, file, caption=caption, parse_mode='HTML')
+            except Exception as e:
+                logger.error(f"Ошибка отправки файла решения {file_name}: {e}")
+                if thread_id:
+                    bot.send_message(chat_id, f"❌ Не удалось отправить файл: {original_name or file_name}", message_thread_id=thread_id)
+                else:
+                    bot.send_message(chat_id, f"❌ Не удалось отправить файл: {original_name or file_name}")
+
+    # Финальное меню
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("🔙 Назад к заданиям", callback_data="back_to_dates"))
+    markup.add(types.InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu"))
+    final_msg = f"✅ Все решения отправлены!\n\n📚 <b>Задание:</b> {subject_name}\n📎 <b>Решений:</b> {len(solutions)}"
+    if thread_id:
+        bot.send_message(chat_id, final_msg, parse_mode='HTML', reply_markup=markup, message_thread_id=thread_id)
+    else:
+        bot.send_message(chat_id, final_msg, parse_mode='HTML', reply_markup=markup)
+
+
+# ===== ОБРАБОТЧИК ТЕКСТОВЫХ СООБЩЕНИЙ ДЛЯ РЕШЕНИЙ =====
+@bot.message_handler(
+    func=lambda message: message.from_user.id in user_data and
+                         user_data[message.from_user.id].get('step') == 'waiting_solution_file' and
+                         message.content_type == 'text')
+def handle_solution_text(message):
+    """Сохраняет текстовое решение, если пользователь в режиме добавления решения"""
+    if not check_topic_access(message):
+        return
+
+    user_id = message.from_user.id
+    text = message.text.strip()
+
+    if text.lower() == '/done':
+        # Завершаем добавление файлов (файлы уже могли быть добавлены)
+        from file_handlers import finish_adding_files
+        finish_adding_files(message)
+        return
+    elif text.lower() == '/cancel':
+        cancel_operation(message)
+        return
+
+    # Сохраняем текстовое решение
+    if save_text_solution_to_db(user_id, text):
+        bot.reply_to(message, "✅ Текстовое решение сохранено. Можете добавить ещё текст или отправить файл.\n"
+                              "Для завершения отправьте /done")
+        log_action(message.from_user, "Добавление текстового решения", f"Текст: {text[:50]}...")
+    else:
+        bot.reply_to(message, "❌ Не удалось сохранить решение. Попробуйте ещё раз или /cancel")
+
+
+# ===== ОБРАБОТЧИКИ CALLBACK (дополнен) =====
 @bot.callback_query_handler(func=lambda call: True)
 def handle_all_callbacks(call):
     user_id = call.from_user.id
@@ -53,6 +242,7 @@ def handle_all_callbacks(call):
             if hasattr(call.message, 'message_thread_id') and call.message.message_thread_id != TOPIC_ID:
                 bot.answer_callback_query(call.id, "❌ Эта команда доступна только в определенном топике")
                 return
+
 
     # Обработка основных меню
     if call.data == 'main_menu':
@@ -322,7 +512,9 @@ def handle_all_callbacks(call):
     
     elif call.data in ['attach_exam_file', 'save_exam_without_file', 'cancel_exam_add']:
         handle_exam_callback(call)
-
+    if call.data.startswith('view_solutions_'):
+        hw_id = int(call.data.replace('view_solutions_', ''))
+        show_homework_solutions(call, hw_id)
 def handle_add_callback(call):
     user_id = call.from_user.id
     chat_id = call.message.chat.id

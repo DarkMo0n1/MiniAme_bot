@@ -4,6 +4,12 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+import sqlite3
+import os
+import logging
+
+logger = logging.getLogger(__name__)
+
 def init_db():
     conn = sqlite3.connect('homework.db')
     cursor = conn.cursor()
@@ -44,9 +50,10 @@ def init_db():
                    (
                        id INTEGER PRIMARY KEY AUTOINCREMENT,
                        homework_id INTEGER NOT NULL,
-                       file_name TEXT NOT NULL,
-                       file_type TEXT NOT NULL,
+                       file_name TEXT,
+                       file_type TEXT,
                        original_name TEXT,
+                       solution_text TEXT,
                        added_by TEXT,
                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                        FOREIGN KEY (homework_id) REFERENCES homework (id) ON DELETE CASCADE
@@ -175,9 +182,16 @@ def init_db():
         if col not in columns:
             cursor.execute(f"ALTER TABLE homework ADD COLUMN {col} INTEGER")
 
+    # Добавляем поле solution_text в homework_solutions, если его нет
+    cursor.execute("PRAGMA table_info(homework_solutions)")
+    columns = [col[1] for col in cursor.fetchall()]
+    if 'solution_text' not in columns:
+        cursor.execute("ALTER TABLE homework_solutions ADD COLUMN solution_text TEXT")
+
     conn.commit()
     conn.close()
     logger.info("База данных инициализирована")
+
 
 def save_birthdays_to_db():
     """Сохраняет дни рождения из файла в БД"""
